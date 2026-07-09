@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ai-redact: never commit documents or redaction outputs
+*.pdf
+*_report.txt
+input/*
+output/*
+!input/.gitkeep
+!output/.gitkeep
+config/redact_config.yaml

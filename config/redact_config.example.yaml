@@ -1,0 +1,94 @@
+# ================================================================
+#  ai-redact configuration
+# ================================================================
+#  This template is copied to config/redact_config.yaml the first
+#  time you run scripts/run.sh. Edit THAT copy — it is yours, it is
+#  used automatically on every run, and it can never be committed
+#  to git. (Pass --config <file> to use a different one for a run.)
+#
+#  Full reference for every setting: docs/CONFIGURATION.md
+#  This file stays on your Mac. It is never uploaded anywhere.
+# ================================================================
+
+
+# ----------------------------------------------------------------
+# 1. PRESET — which document type to assume when you don't say.
+#    One of: financial, medical, legal, general
+#    (./scripts/run.sh financial  still overrides this per run)
+# ----------------------------------------------------------------
+preset: general
+
+
+# ----------------------------------------------------------------
+# 2. CATEGORY SWITCHES — force a detector ON or OFF for every run.
+#      true  = always redact, no matter which preset is used
+#      false = never redact, no matter which preset is used
+#      line commented out = let the preset decide
+#    The identifiers below are ON because they are sensitive in
+#    any document type.
+# ----------------------------------------------------------------
+categories:
+  email: true              # any email address
+  phone: true              # any phone number
+  ssn: true                # any Social Security number
+  drivers_license: true    # any labeled driver's license number
+  passport: true           # any labeled passport number
+  credit_card: true        # any credit/debit card number (checksum-verified)
+  # account_number: true   # bank/brokerage account numbers
+  # routing_number: true   # bank routing numbers
+  # tax_id: true           # EIN / TIN tax IDs
+  # dob: true              # dates of birth (only DOB-labeled dates)
+  # address: true          # street addresses, city/state/zip, PO boxes
+  # mrn: true              # medical record / patient numbers
+  # insurance_id: true     # insurance, member, Medicare/Medicaid IDs
+  # case_number: true      # legal case / docket numbers
+
+
+# ----------------------------------------------------------------
+# 3. CUSTOM TERMS — exact text to remove from every PDF.
+#    The automatic detectors never guess names, so put YOUR names
+#    here. Matching is case-insensitive and whole-word ("Ann" will
+#    not hit "Annual"). Add every variation your documents use.
+# ----------------------------------------------------------------
+custom_terms: []
+  # --- your names ---
+  # - "John Smith"
+  # - "Smith, John"
+  # - "John Q. Smith"
+  # --- children's names ---
+  # - "Emma Smith"
+  # --- doctor / business names ---
+  # - "Dr. Jane Chen"
+  # - "Acme Family Practice"
+  # --- addresses or IDs the detectors might miss ---
+  # - "123 Maple Grove"
+  # - "Z-98765-B"
+
+
+# ----------------------------------------------------------------
+# 4. EXCLUDE TERMS — the "never redact" list. If a detector keeps
+#    blacking out something harmless (a company's public 800
+#    number, a support email), put the exact text here.
+# ----------------------------------------------------------------
+exclude_terms: []
+  # - "800-555-0199"           # brokerage's public support line
+  # - "support@acmebank.com"   # public contact address
+
+
+# ----------------------------------------------------------------
+# 5. OPTIONS — behavior toggles.
+# ----------------------------------------------------------------
+options:
+  ocr: true               # read scanned/image pages with OCR and blank the
+                          # matching image regions (needs: brew install tesseract)
+  redact_barcodes: true   # blank QR codes/barcodes when detectable
+                          # (needs: brew install zbar + pip install pyzbar pillow)
+
+
+# ----------------------------------------------------------------
+# 6. CUSTOM PATTERNS (advanced) — your own regular expressions.
+#    Only touch this if you know regex.
+# ----------------------------------------------------------------
+custom_patterns: []
+  # - name: employee-id
+  #   regex: '\bEMP-\d{6}\b'
