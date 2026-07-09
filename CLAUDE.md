@@ -78,5 +78,8 @@ running `./scripts/run.sh financial`, then checking:
   collect from output/, edit config) — technical detail belongs in docs/.
 - `input/`, `output/` — user documents; contents are gitignored and must
   stay that way. All `*.pdf` and `*_report.txt` are gitignored repo-wide.
-- pyzbar/Pillow are optional (QR/barcode redaction); code must keep working
-  without them.
+- QR/barcode redaction uses zxing-cpp (pinned <2.3 for macOS system Python
+  3.9 wheel compatibility); code must keep working if its import fails.
+  Do NOT switch to pyzbar/zbar: Homebrew zbar 0.23.93 segfaults decoding
+  QR codes on this machine (even `zbarimg` crashes), and a C-level crash
+  can't be caught in Python.

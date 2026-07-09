@@ -27,8 +27,9 @@ ai-redact/
 
 ## Design principles
 
-1. **Local only.** No network calls anywhere. Dependencies: PyMuPDF, PyYAML;
-   optional pyzbar/Pillow (QR) and Tesseract language data (OCR).
+1. **Local only.** No network calls anywhere. Dependencies: PyMuPDF, PyYAML,
+   zxing-cpp/Pillow (QR/barcodes), and Tesseract language data (OCR) — all
+   installed automatically by `scripts/run.sh`.
 2. **True redaction.** PyMuPDF redaction annotations + `apply_redactions()`
    delete the text and blank overlapping image pixels. Never a box drawn
    over intact content.
@@ -56,7 +57,7 @@ open PDF
       minus exclude_terms (the config's never-redact allowlist)
    5. locate each match on the page (search_for; OCR textpage for scans)
       • unlocatable match → recorded, reported "<< NOT LOCATED", never silent
-   6. decode QR/barcodes in images (pyzbar, optional) → add their rects
+   6. decode QR/barcodes in images (zxing-cpp) → add their rects
    7. add redaction annotations for every rect
 └─ apply_redactions(images=PIXELS)   # deletes text, blanks image regions
 └─ scrub document metadata

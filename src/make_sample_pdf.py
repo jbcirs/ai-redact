@@ -82,6 +82,23 @@ Amount due: $142.19    Due date: 07/25/2026
 """
 
 
+def make_qr_pixmap():
+    """A QR code holding fake account data, to test barcode redaction.
+
+    Returns a fitz.Pixmap, or None if the qrcode library isn't installed.
+    """
+    try:
+        import io
+
+        import qrcode
+    except ImportError:
+        return None
+    img = qrcode.make("ACCT:4815-162342-99;SSN:000-12-3456 (fake)")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return fitz.Pixmap(buf.getvalue())
+
+
 def main():
     root = Path(__file__).resolve().parent.parent
     input_dir = root / "input"
@@ -93,6 +110,12 @@ def main():
         page = doc.new_page()  # US Letter-ish default (612 x 792)
         page.insert_text((50, 60), body, fontname="courier",
                          fontsize=10, lineheight=1.4)
+    qr = make_qr_pixmap()
+    if qr is not None:
+        # Bottom of page 1, like the scan-to-pay codes on real statements.
+        doc[0].insert_text((50, 640), "Scan to view your account online:",
+                           fontname="courier", fontsize=10)
+        doc[0].insert_image(fitz.Rect(50, 650, 170, 770), pixmap=qr)
     doc.save(input_dir / "sample_statement.pdf")
     doc.close()
 

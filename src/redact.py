@@ -22,6 +22,7 @@ See README.md for full setup and usage instructions.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from datetime import datetime
@@ -48,8 +49,6 @@ def find_tessdata():
     PyMuPDF has Tesseract built in — it only needs the language data files
     (installed on macOS via 'brew install tesseract').
     """
-    import os
-
     p = os.environ.get("TESSDATA_PREFIX")
     if p and os.path.isdir(p):
         return p
@@ -70,17 +69,19 @@ TESSDATA = find_tessdata()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = "config/redact_config.yaml"
 
-# pyzbar is optional: if installed (with the zbar system library), QR codes
-# and barcodes inside page images are decoded and redacted. Without it, pages
-# containing images are only flagged for manual review.
+# zxing-cpp decodes QR codes/barcodes inside page images so they can be
+# redacted. It's a self-contained pip wheel (installed by scripts/run.sh via
+# requirements.txt) — no system library. Without it, pages containing images
+# are only flagged for manual review.
 try:
-    from pyzbar.pyzbar import decode as zbar_decode
-    from PIL import Image
     import io
 
-    HAVE_ZBAR = True
+    import zxingcpp
+    from PIL import Image
+
+    HAVE_BARCODE = True
 except Exception:
-    HAVE_ZBAR = False
+    HAVE_BARCODE = False
 
 
 # ---------------------------------------------------------------------------
@@ -385,15 +386,15 @@ def mask_value(s: str) -> str:
 def scan_page_images(doc, page):
     """Return (barcode_rects, has_images).
 
-    If pyzbar is available, decode each embedded image and return the page
-    rectangles of any barcode/QR found so they can be redacted. Otherwise
-    just report whether the page contains images at all (flagged for
-    manual review in the report).
+    If zxing-cpp is available, decode each embedded image and return the
+    page rectangles of any barcode/QR found so they can be redacted.
+    Otherwise just report whether the page contains images at all (flagged
+    for manual review in the report).
     """
     images = page.get_images(full=True)
     if not images:
         return [], False
-    if not HAVE_ZBAR:
+    if not HAVE_BARCODE:
         return [], True
     barcode_rects = []
     for img in images:
@@ -403,7 +404,7 @@ def scan_page_images(doc, page):
             if pix.n - pix.alpha >= 4:  # CMYK etc. -> RGB
                 pix = fitz.Pixmap(fitz.csRGB, pix)
             pil = Image.open(io.BytesIO(pix.tobytes("png")))
-            if zbar_decode(pil):
+            if zxingcpp.read_barcodes(pil):
                 barcode_rects.extend(page.get_image_rects(xref))
         except Exception:
             continue  # unreadable image; it stays flagged via has_images
@@ -656,7 +657,7 @@ def write_report(report_path: Path, input_path: Path, output_path: Path,
             "not be determined (usually text split across lines). They were "
             "NOT redacted — review those pages manually.")
     if results["image_pages"]:
-        if HAVE_ZBAR:
+        if HAVE_BARCODE:
             redacted = set(results["barcode_pages"])
             flagged = [p for p in results["image_pages"] if p not in redacted]
             if results["barcode_pages"]:
@@ -672,8 +673,8 @@ def write_report(report_path: Path, input_path: Path, output_path: Path,
             warnings.append(
                 f"IMAGES PRESENT on pages {results['image_pages']}: these may "
                 f"contain QR codes, barcodes, or signatures. Automatic "
-                f"barcode detection is OFF (install optional extras: "
-                f"'brew install zbar && pip install pyzbar pillow'). "
+                f"barcode detection is OFF (reinstall dependencies: "
+                f"'.venv/bin/pip install -r requirements.txt'). "
                 f"Review these pages manually.")
 
     add("-" * 70)

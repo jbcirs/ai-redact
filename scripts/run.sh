@@ -27,8 +27,8 @@ if [ ! -x .venv/bin/python ]; then
     echo "==> First run: creating Python environment (.venv)..."
     python3 -m venv .venv || { echo "ERROR: could not create venv"; exit 1; }
 fi
-if ! .venv/bin/python -c "import fitz, yaml" 2>/dev/null; then
-    echo "==> Installing dependencies (PyMuPDF, PyYAML)..."
+if ! .venv/bin/python -c "import fitz, yaml, PIL, qrcode, zxingcpp" 2>/dev/null; then
+    echo "==> Installing Python dependencies..."
     .venv/bin/pip install -q --upgrade pip
     .venv/bin/pip install -q -r requirements.txt || {
         echo "ERROR: dependency install failed"; exit 1; }
@@ -49,7 +49,6 @@ if ! command -v tesseract >/dev/null \
         echo "      will be skipped. To enable OCR later: brew install tesseract"
     fi
 fi
-
 # Personal config: created from the committed template on first run. The
 # real config is gitignored (it will contain your names/accounts).
 if [ ! -f config/redact_config.yaml ]; then

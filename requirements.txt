@@ -1,7 +1,12 @@
-# Core dependencies — installed with: pip install -r requirements.txt
+# Python dependencies — installed automatically by scripts/run.sh
+# (or manually with: .venv/bin/pip install -r requirements.txt)
 PyMuPDF>=1.24
 PyYAML>=6.0
 
-# Optional: QR/barcode detection inside page images.
-# Requires the zbar system library first:  brew install zbar
-# then:  pip install pyzbar pillow
+# QR/barcode detection inside page images (self-contained wheel, no system
+# libraries needed). <2.3 keeps compatibility with macOS system Python 3.9.
+zxing-cpp>=2.0,<2.3
+pillow>=10.0
+
+# Used only by src/make_sample_pdf.py to put a test QR code in the samples.
+qrcode>=7.0

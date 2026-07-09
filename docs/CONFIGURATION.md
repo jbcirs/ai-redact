@@ -105,9 +105,9 @@ options:
   `ocr: false` (or Tesseract absent), unreadable pages are reported and the
   run exits with code 2 — never silently skipped.
 - `redact_barcodes` — blank QR codes/barcodes that can be decoded inside
-  page images. Needs the optional extras
-  (`brew install zbar && .venv/bin/pip install pyzbar pillow`); without
-  them, pages containing images are flagged in the report instead.
+  page images (uses zxing-cpp, installed automatically with the other
+  Python dependencies). Images where nothing could be decoded are flagged
+  in the report for manual review either way.
 
 ### `custom_patterns` (advanced)
 
