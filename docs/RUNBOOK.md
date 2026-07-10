@@ -7,7 +7,11 @@ Step-by-step operating guide. For how the tool works internally, see
 
 1. **Move anything you want to keep out of `output/`** — it is emptied at
    the start of every run.
-2. Drop the PDFs to redact into `input/` (Finder is fine).
+2. Drop the documents to redact into `input/` (Finder is fine). Supported:
+   PDF, Word (.docx), PowerPoint (.pptx), Excel (.xlsx), CSV/TSV,
+   text/HTML/JSON/YAML/XML, and images (jpg, png, tiff, heic, webp, gif,
+   avif, bmp, ico, psd, camera RAW). Anything else lands in an
+   "Unsupported" bucket in the summary — nothing is guessed at.
 3. From the project folder, run:
 
    ```bash
@@ -71,6 +75,28 @@ A missing `--config` file is a hard error, never silently ignored.
 open output/sample_statement_redacted.pdf
 open output/sample_scanned_redacted.pdf    # exercises the OCR path
 ```
+
+## Regression test suite (every format)
+
+```bash
+./scripts/test.sh
+```
+
+Generates fake fixtures for every supported format (each planting known
+identifiers plus a `$12,345.67` string that must SURVIVE), redacts them
+all in a temp dir, and asserts the planted PII is gone from every output
+— including by re-OCR'ing redacted images — and the financial string
+remains. Run it after any change to detection patterns or handlers.
+
+## Auditing your config
+
+```bash
+./scripts/redact.sh --check-config
+```
+
+Prints every custom term, category switch, and option exactly as the tool
+resolved them — if a name you added doesn't appear in the list, it isn't
+being redacted (check the YAML structure).
 
 ## Troubleshooting
 

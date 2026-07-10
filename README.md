@@ -1,28 +1,40 @@
 # ai-redact
 
-**Blacks out your personal information in PDFs — permanently — before you
-share them with AI tools.**
+**Blacks out your personal information in documents — permanently — before
+you share them with AI tools.**
 
-Drop in a bank statement, medical record, or legal document and get back a
-copy with SSNs, account numbers, emails, phones, addresses, and your own
-custom terms truly removed (deleted from the file, not just covered up),
-plus a report proving it. Financial numbers you care about — balances,
-holdings, prices, gains — are left untouched.
+Drop in a bank statement, medical record, Word doc, spreadsheet, photo of
+a form, or legal document and get back a copy with SSNs, account numbers,
+emails, phones, addresses, and your own custom terms truly removed
+(deleted from the file, not just covered up), plus a report proving it.
+Financial numbers you care about — balances, holdings, prices, gains —
+are left untouched.
+
+**Works with:** PDF · Word (.docx) · PowerPoint (.pptx) · Excel (.xlsx) ·
+CSV · text/HTML/JSON · images and scans (JPG, PNG, TIFF, HEIC, WebP, GIF,
+AVIF, and more — including photo metadata like GPS location, which is
+stripped automatically).
 
 Everything runs on your Mac. Nothing is ever uploaded anywhere.
 
 ## How to use it
 
-1. **Drop your PDFs into the `input/` folder.**
+1. **Drop your documents into the `input/` folder** (any supported type,
+   mixed together is fine).
 2. **Run this in Terminal from the project folder:**
 
    ```bash
    ./scripts/run.sh
    ```
 
-3. **Copy your redacted PDFs out of the `output/` folder.**
+3. **Copy your redacted files out of the `output/` folder.**
    Each one comes with a `_report.txt` — check it says
-   `POST-REDACTION VERIFICATION: PASS`, then give the PDF a quick skim.
+   `POST-REDACTION VERIFICATION: PASS`, then give the file a quick skim.
+
+Text, spreadsheets, CSVs, and images come back in their own format
+(images with all hidden metadata stripped); Word and PowerPoint come back
+as PDFs — that's deliberate, because Word files can hide tracked changes
+and comments that "redacted" copies would leak.
 
 That's it. The first run sets everything up automatically (takes a
 minute). `output/` is emptied at the start of every run, and your files in

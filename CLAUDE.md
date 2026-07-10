@@ -1,8 +1,10 @@
 # CLAUDE.md
 
-Local-only PDF redaction tool. Strips PII (SSNs, account numbers, emails,
-addresses, MRNs, custom names, …) from PDFs before the user uploads them to
-AI tools. macOS, Python 3.9+, PyMuPDF.
+Local-only document redaction tool. Strips PII (SSNs, account numbers,
+emails, addresses, MRNs, custom names, …) from PDFs, Office docs, images,
+spreadsheets, CSV, and text before the user uploads them to AI tools.
+macOS, Homebrew Python 3.13 (run.sh bootstraps it; system 3.9 lacks
+wheels for pinned deps), PyMuPDF.
 
 ## Hard constraints — never violate these
 
@@ -32,54 +34,96 @@ AI tools. macOS, Python 3.9+, PyMuPDF.
 - Contextual regex patterns must not cross line breaks (use `SEP` /
   `[ \t]*`, not `\s*`, between label and value) — otherwise a label at a
   line end captures the next line's text.
+- Pattern boundary guards must reject only digit CONTINUATIONS, never
+  sentence punctuation: `(?![\d.\-])` silently missed every phone followed
+  by a period ("…9999.") — a real bug found by the test suite. Use
+  `(?!\d)(?![.\-]\d)` style guards.
+- `find_matches_in_text` scans the raw text AND a whitespace-normalized
+  copy (values wrapped across line breaks evade single-whitespace
+  separators). Keep both scans when touching it.
+- Tabular handlers (csv, xlsx) scan each data cell bare AND as
+  `"column header: value"` (header-as-context) — otherwise labeled
+  detectors never fire in tables; and they must use tabular_categories()
+  (drops the bare digit-run pattern) so numeric financial columns are
+  never mass-redacted.
+- Every new handler MUST implement post-redaction verification
+  (verify_file / re-scan of the written output). No verification = does
+  not ship. Run `./scripts/test.sh` after any detection or handler change.
 
 ## Commands
 
 ```bash
-./scripts/run.sh [preset] [--dry-run]   # batch: input/ -> output/ (cleans output/ first; sets up .venv + tesseract on first run)
-./scripts/redact.sh file.pdf --preset financial    # single file
+./scripts/run.sh [preset] [--dry-run]   # batch: input/ -> output/, ANY supported format (cleans output/ first; bootstraps python@3.13 + deps + tesseract)
+./scripts/redact.sh file.docx --preset financial   # single file, any format
 ./scripts/redact.sh --list-categories
+./scripts/redact.sh --check-config      # audit what the config resolves to
+./scripts/test.sh                       # REQUIRED gate: planted-PII regression suite, all formats
 .venv/bin/python src/make_sample_pdf.py # regenerate fake-data samples into input/
 ```
 
-There is no test suite; verify changes by regenerating the samples and
-running `./scripts/run.sh financial`, then checking:
-1. exit status 0 and "Verify : PASS" per file (the tool re-scans its own
-   output; scan pages are re-OCR'd),
-2. the reports in `output/*_report.txt`,
-3. that financial figures are still present in the output text
-   (`page.get_text()`),
-4. the scanned sample's output renders with the PII regions blanked.
+Verification for changes: `./scripts/test.sh` (generates fixtures for
+every format, redacts, asserts planted PII gone + $12,345.67 survives),
+plus `./scripts/run.sh` over input/ expecting all PASS. Exit codes:
+0 ok / 2 unreadable pages / 3 verify failed / 4 unsupported format.
 
 ## Layout
 
-- `src/redact.py` — everything: `CATEGORY_PATTERNS` (regex + optional
+- `src/redact.py` — engine: `CATEGORY_PATTERNS` (regex + optional
   validator + optional named `redact` group for contextual matches),
-  `PRESETS`, detection, OCR, redaction, post-redaction verification, report.
+  `PRESETS`, PDF detection/OCR/redaction/verification/report, the format
+  **router** (`route_input`, magic-bytes-first dispatch to handlers), the
+  convert/native execution flows (`run_convert_flow`/`run_native_flow`),
+  config loading/linting, and the CLI.
+- `src/handlers/` — one module per format family; see
+  `docs/plans/handler-spec.md` for the binding contract (Kind A convert
+  handlers expose `to_pdf`/`write_back`; Kind B native handlers expose
+  `redact_file`/`verify_file`, both mandatory). Every handler MUST
+  implement post-redaction verification — no verification, does not ship.
 - `src/make_sample_pdf.py` — writes fake-data test PDFs into `input/`
   (one searchable, one image-only for the OCR path).
+- `tests/make_*_fixtures.py` + `tests/check_outputs.py` — planted-PII
+  fixture generators (one per format family) and the assertion that
+  checks every redacted output for leaked PII / preserved financial data.
 - `scripts/redact.sh` — thin single-file wrapper running src/redact.py
   with `.venv`'s Python.
-- `scripts/run.sh` — env setup + batch processing of `input/` to `output/`;
-  empties `output/` (except .gitkeep) at the start of each run; classifies
-  redact.py exit codes (0 ok / 2 unreadable pages / 3 verify failed).
-- `docs/RUNBOOK.md`, `docs/ARCHITECTURE.md` — keep in sync with behavior
-  changes.
+- `scripts/run.sh` — bootstraps Homebrew python@3.13 (rebuilds `.venv` on
+  version mismatch), deps, Tesseract, personal config; batch-processes
+  every file in `input/` to `output/` (any supported format, not just
+  PDF); empties `output/` (except .gitkeep) at the start of each run;
+  classifies redact.py exit codes (0 ok / 2 unreadable / 3 verify failed /
+  4 unsupported).
+- `scripts/test.sh` — required regression gate; run after any change to
+  detection patterns or handlers.
+- `docs/RUNBOOK.md`, `docs/ARCHITECTURE.md`, `docs/CONFIGURATION.md` —
+  keep in sync with behavior changes.
+- `docs/plans/` — all plan documents live here.
+  `format-support-plan.md`: multi-format support + Python 3.13 upgrade,
+  EXECUTED 2026-07-09 (§8 has the execution record, deviations, and bugs
+  the test suite found); `handler-spec.md`: the handler contract —
+  consult before touching or adding a handler; `expansion-plan.md`:
+  PROPOSED plan (decisions locked 2026-07-10) for legacy Office/RTF,
+  email, epub, passwords, Apple Vision handwriting/faces, and
+  everything-to-PDF + combine-into-one-PDF.
+- `custom_terms`/`exclude_terms` accept flat lists OR grouped mappings —
+  `flatten_terms()` handles both. This was a real silent-miss bug (group
+  labels matched instead of names); never regress it.
 - `config/redact_config.yaml` — user's personal config: `preset`,
   `categories` (per-detector true/false switches over the preset; email,
   phone, ssn, drivers_license, passport, credit_card ship as `true`),
-  `custom_terms`, `exclude_terms`, `options` (ocr / redact_barcodes),
-  `custom_patterns`; loaded by default on every run (`--config` overrides;
-  missing explicit config = hard error). Gitignored and auto-created by
-  run.sh from `config/redact_config.example.yaml` — edit the example for
-  template changes; never commit or echo the personal copy's contents.
-  All settings are documented in `docs/CONFIGURATION.md` — keep it in sync.
+  `custom_terms`, `exclude_terms`, `options` (ocr / redact_barcodes /
+  output.images), `custom_patterns`; loaded by default on every run
+  (`--config` overrides; missing explicit config = hard error). Gitignored
+  and auto-created by run.sh from `config/redact_config.example.yaml` —
+  edit the example for template changes; never commit or echo the
+  personal copy's contents. All settings documented in
+  `docs/CONFIGURATION.md` — keep it in sync. `--check-config` prints the
+  fully resolved config for auditing.
 - README is deliberately simple/non-technical (drop in input/, run.sh,
   collect from output/, edit config) — technical detail belongs in docs/.
-- `input/`, `output/` — user documents; contents are gitignored and must
-  stay that way. All `*.pdf` and `*_report.txt` are gitignored repo-wide.
-- QR/barcode redaction uses zxing-cpp (pinned <2.3 for macOS system Python
-  3.9 wheel compatibility); code must keep working if its import fails.
+- `input/`, `output/` — user documents; ALL contents are gitignored
+  (`input/*`, `output/*`, only `.gitkeep` tracked) and must stay that way.
+- QR/barcode redaction uses zxing-cpp (unpinned on Python 3.13; the old
+  `<2.3` pin was only needed for macOS system Python 3.9, since removed).
   Do NOT switch to pyzbar/zbar: Homebrew zbar 0.23.93 segfaults decoding
   QR codes on this machine (even `zbarimg` crashes), and a C-level crash
   can't be caught in Python.

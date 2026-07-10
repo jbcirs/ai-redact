@@ -1,12 +1,21 @@
 # Python dependencies — installed automatically by scripts/run.sh
 # (or manually with: .venv/bin/pip install -r requirements.txt)
+# Runtime: Python 3.13 (Homebrew python@3.13; run.sh bootstraps it)
 PyMuPDF>=1.24
 PyYAML>=6.0
 
-# QR/barcode detection inside page images (self-contained wheel, no system
-# libraries needed). <2.3 keeps compatibility with macOS system Python 3.9.
-zxing-cpp>=2.0,<2.3
+# QR/barcode detection inside page images (self-contained wheel).
+zxing-cpp>=2.0
 pillow>=10.0
 
-# Used only by src/make_sample_pdf.py to put a test QR code in the samples.
+# Office document support (pure Python)
+python-docx>=1.1
+python-pptx>=1.0
+openpyxl>=3.1
+
+# Extra image formats
+pillow-heif>=0.16      # .heic / .heif
+rawpy>=0.24            # camera RAW decode (.cr2/.cr3/.nef/.arw/.dng) — decode only
+
+# Used only by fixture/sample generators
 qrcode>=7.0

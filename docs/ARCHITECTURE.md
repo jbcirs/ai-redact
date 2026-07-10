@@ -8,10 +8,21 @@ Local-only PDF redaction pipeline. For day-to-day operation see
 ```
 ai-redact/
 ├── src/
-│   ├── redact.py           # the entire tool (detection → redaction → verify → report)
+│   ├── redact.py           # engine: detection, PDF pipeline, format router, CLI, reports
+│   ├── handlers/           # per-format handlers (see "Format handlers" below)
+│   │   ├── common.py       #   shared contract pieces (UnsupportedFormatError, redaction_text)
+│   │   ├── text_handler.py #   .txt .md .log .json .yaml .yml .xml .html .htm (native in/out)
+│   │   ├── csv_handler.py  #   .csv .tsv (cell-aware, header-as-context)
+│   │   ├── excel_handler.py#   .xlsx (native values-only out, all sheets incl. hidden)
+│   │   ├── office_handler.py#  .docx .pptx → simplified PDF (Tier-1 pure Python)
+│   │   └── image_handler.py#   rasters + HEIC/AVIF/RAW/PSD → PDF pipeline → write-back
 │   └── make_sample_pdf.py  # fake-data test PDF generator (writes to input/)
+├── tests/
+│   ├── make_*_fixtures.py  # planted-PII fixture generators per format family
+│   └── check_outputs.py    # asserts planted PII gone + financial data preserved
 ├── scripts/
-│   ├── run.sh              # setup + batch driver: input/ → output/
+│   ├── run.sh              # setup (python@3.13, deps, OCR, config) + batch driver
+│   ├── test.sh             # full-format planted-PII regression suite
 │   └── redact.sh           # single-file wrapper: runs src/redact.py with .venv's python
 ├── config/
 │   ├── redact_config.example.yaml  # committed template
@@ -40,6 +51,34 @@ ai-redact/
    exit code 2 — never a silently "clean" file.
 5. **Names are explicit.** No NLP/NER guessing; names come only from
    `custom_terms` in the config. Deterministic and auditable.
+
+## Format handlers (multi-format support)
+
+The router in `src/redact.py` classifies every input by **magic bytes
+first** (extensions lie: a PDF renamed `.png` still routes to the PDF
+path), then dispatches to one of two handler kinds defined in
+`docs/plans/handler-spec.md`:
+
+- **Convert handlers (Kind A)** — images and docx/pptx convert to PDF
+  bytes and ride the proven PDF pipeline below (redaction, OCR,
+  verification). Images can be written back to their original format
+  afterwards (`output.images: original`), rebuilt from pixels so
+  EXIF/GPS/XMP can never survive. Office conversion is Tier-1 pure
+  Python (python-docx/python-pptx → simplified PDF); anything the
+  converter can't carry (textboxes, SmartArt) is counted and reported —
+  omitted content can't leak, but loss is never silent.
+- **Native handlers (Kind B)** — text, CSV/TSV, and XLSX redact in their
+  own format and implement their own mandatory `verify_file` pass.
+  Tabular handlers scan every data cell twice: bare, and as
+  `"column header: value"` — so a column labeled "SSN" full of
+  unformatted numbers still matches the labeled detectors. The bare
+  digit-run account pattern is excluded for tabular formats so numeric
+  financial columns are never mass-redacted.
+
+Runtime is Homebrew Python 3.13; `scripts/run.sh` installs it, rebuilds
+`.venv` on version mismatch, and processes every file in `input/`
+(unsupported types exit 4 into an "Unsupported" summary bucket).
+`scripts/test.sh` is the cross-format planted-PII regression gate.
 
 ## Pipeline (src/redact.py)
 

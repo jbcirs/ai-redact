@@ -49,6 +49,15 @@ categories:
 #    The automatic detectors never guess names, so put YOUR names
 #    here. Matching is case-insensitive and whole-word ("Ann" will
 #    not hit "Annual"). Add every variation your documents use.
+#
+#    You can write one flat list, or organize terms into groups —
+#    both work exactly the same:
+#
+#      custom_terms:            custom_terms:
+#        - "John Smith"           names:
+#        - "123 Maple Ave"          - "John Smith"
+#                                 addresses:
+#                                   - "123 Maple Ave"
 # ----------------------------------------------------------------
 custom_terms: []
   # --- your names ---

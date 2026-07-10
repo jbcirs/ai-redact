@@ -74,8 +74,22 @@ custom_terms:
   - "Dr. Jane Chen"
 ```
 
-Matching is case-insensitive, whole-word, non-fuzzy. Terms shorter than 2
-characters are ignored. Reported under "Custom terms (from config)".
+You may also organize terms into named groups — the group names are just
+labels for you and both shapes behave identically:
+
+```yaml
+custom_terms:
+  names:
+    - "John Smith"
+  addresses:
+    - "123 Maple Ave"
+```
+
+Matching is case-insensitive, whole-word, non-fuzzy, and tolerant of
+whitespace differences ("Jane Smith" matches even when a PDF splits it
+across a line break). Terms shorter than 2 characters are reported and
+ignored; a `custom_terms` section that yields no usable terms is a hard
+error. Reported under "Custom terms (from config)".
 
 ### `exclude_terms`
 
@@ -97,7 +111,18 @@ post-redaction check.
 options:
   ocr: true              # default: true
   redact_barcodes: true  # default: true
+  output:
+    images: original     # original (default) | png | pdf
 ```
+
+- `output.images` — what redacted images come back as: `original` keeps
+  the input format (HEIC/RAW/PSD can't be written and fall back to JPEG
+  with a report note), `png` standardizes everything to lossless PNG,
+  `pdf` wraps the redacted image in a one-page PDF. All image outputs are
+  rebuilt from pixels — EXIF/GPS/XMP metadata never survives.
+- Document outputs are fixed by design: text/CSV/XLSX return their own
+  format; Word/PowerPoint always return PDF (native .docx out would leak
+  tracked changes/comments).
 
 - `ocr` — read scanned/image-only pages with OCR to locate sensitive text,
   then blank those image regions. Needs Tesseract language data
@@ -145,10 +170,14 @@ Single file (`./scripts/redact.sh`, same as `src/redact.py`):
 | `--categories a,b,c` | Exact category list — bypasses both the preset and the config's `categories` switches |
 | `--report PATH` | Report path (default `<output>_report.txt`) |
 | `--list-categories` | Print all categories and presets, then exit |
+| `--check-config` | Print exactly what the config resolves to — every custom term, switch, and option — then exit. Use it to audit that your terms actually loaded. |
 
 Exit codes: `0` redacted + verified · `2` unreadable scanned page(s)
 remain unredacted · `3` post-redaction verification failed (do not share
-the output).
+the output) · `4` unsupported file type.
+
+Unknown config keys (e.g. a typo like `custom_term:`) print a
+`! Config:` warning at startup — settings are never silently ignored.
 
 ## Precedence summary
 

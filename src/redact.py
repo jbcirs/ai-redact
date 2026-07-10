@@ -149,7 +149,9 @@ CATEGORY_PATTERNS = {
     "phone": [
         # Requires separators (dashes/dots/spaces/parens) so plain digit runs
         # like account numbers or quantities are not mistaken for phones.
-        _p(r"(?<![\d.\-])(?:\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}(?![\d.\-])", flags=0),
+        # Boundary guards reject digit continuations ("...9999.5") but must
+        # allow sentence punctuation ("...9999." at end of a sentence).
+        _p(r"(?<!\d)(?<!\d[.\-])(?:\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}(?!\d)(?![.\-]\d)", flags=0),
     ],
     "ssn": [
         _p(r"\b\d{3}-\d{2}-\d{4}\b", flags=0),
@@ -171,8 +173,9 @@ CATEGORY_PATTERNS = {
         # Masked forms: "XXXX-1234", "****6789", "•••• 4321"
         _p(r"(?:[Xx*•]{2,}[\s\-]?){1,4}\d{2,6}\b", flags=0),
         # Standalone long digit runs (8–17 digits, not part of a money amount
-        # or decimal). Long enough that balances/prices never match.
-        _p(r"(?<![\d.,$\-])\d{8,17}(?![\d.,])", flags=0),
+        # or decimal). Long enough that balances/prices never match. Trailing
+        # guard rejects digit continuations but allows sentence punctuation.
+        _p(r"(?<![\d.,$\-])\d{8,17}(?!\d)(?![.,]\d)", flags=0),
     ],
     "credit_card": [
         # 16-digit cards in 4-4-4-4 groups and Amex 4-6-5, with separators.
@@ -300,15 +303,48 @@ def load_config(path: Path) -> dict:
     return cfg
 
 
+def flatten_terms(value):
+    """Yield term strings from a config value.
+
+    Users write custom_terms either as a flat list or grouped under
+    headings (names:, addresses:, …) — both must work:
+
+        custom_terms:            custom_terms:
+          - "John Smith"           names:
+          - "123 Maple Ave"          - "John Smith"
+                                   addresses:
+                                     - "123 Maple Ave"
+    """
+    if isinstance(value, dict):
+        for group in value.values():
+            for term in flatten_terms(group):
+                yield term
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            for term in flatten_terms(item):
+                yield term
+    elif value is not None:
+        term = str(value).strip()
+        if term:
+            yield term
+
+
 def build_custom_patterns(cfg: dict):
     """Turn config custom_terms / custom_patterns into pattern dicts."""
     patterns = []
-    for term in cfg.get("custom_terms") or []:
-        term = str(term).strip()
+    for term in flatten_terms(cfg.get("custom_terms")):
         if len(term) < 2:
-            continue  # 1-char terms would redact far too much
-        # Whole-word, case-insensitive exact match of the literal term.
-        patterns.append(_p(r"(?<!\w)" + re.escape(term) + r"(?!\w)"))
+            # 1-char terms would redact far too much; never skip silently.
+            print(f"  ! Ignoring custom term {term!r}: too short to match safely")
+            continue
+        # Whole-word, case-insensitive match. Whitespace inside the term
+        # matches ANY whitespace run, so "Jane Smith" still matches when a
+        # PDF renders it as "Jane  Smith" or splits it across a line break.
+        esc = r"\s+".join(re.escape(part) for part in term.split())
+        patterns.append(_p(r"(?<!\w)" + esc + r"(?!\w)"))
+    if cfg.get("custom_terms") and not patterns:
+        sys.exit("Config error: custom_terms contains no usable terms — "
+                 "check its format (see docs/CONFIGURATION.md).")
     for item in cfg.get("custom_patterns") or []:
         if isinstance(item, dict) and item.get("regex"):
             try:
@@ -333,20 +369,27 @@ def find_matches_in_text(text: str, categories: dict, exclude=()) -> list:
     longest matches first (so overlapping shorter hits don't leave
     fragments behind).
     """
+    # Scan the raw text AND a whitespace-normalized copy: a value wrapped
+    # across a line break ("(555)\n010-9999") defeats single-whitespace
+    # separators in the patterns, but matches in the normalized copy.
+    # locate_on_page and search_for handle line-crossing needles.
+    norm = " ".join(text.split())
+    sources = (text, norm) if norm != text else (text,)
     found = {}
     for category, patterns in categories.items():
         for pat in patterns:
-            for m in pat["regex"].finditer(text):
-                s = m.group(pat["group"]) if pat["group"] else m.group(0)
-                s = s.strip()
-                if not s:
-                    continue
-                if pat["validator"] and not pat["validator"](s):
-                    continue
-                low = s.lower()
-                if any(x in low for x in exclude):
-                    continue
-                found.setdefault((category, s), True)
+            for src in sources:
+                for m in pat["regex"].finditer(src):
+                    s = m.group(pat["group"]) if pat["group"] else m.group(0)
+                    s = s.strip()
+                    if not s:
+                        continue
+                    if pat["validator"] and not pat["validator"](s):
+                        continue
+                    low = s.lower()
+                    if any(x in low for x in exclude):
+                        continue
+                    found.setdefault((category, s), True)
     return sorted(found.keys(), key=lambda cs: -len(cs[1]))
 
 
@@ -566,7 +609,8 @@ def verify_output(output_path: Path, categories: dict, ocr_pages=(),
 # Report
 # ---------------------------------------------------------------------------
 def write_report(report_path: Path, input_path: Path, output_path: Path,
-                 preset: str, results: dict, remaining, dry_run: bool):
+                 preset: str, results: dict, remaining, dry_run: bool,
+                 conversion: dict = None):
     lines = []
     add = lines.append
     bar = "=" * 70
@@ -579,6 +623,23 @@ def write_report(report_path: Path, input_path: Path, output_path: Path,
     add(f"Preset    : {preset}")
     add(f"Pages     : {results['page_count']}")
     add("")
+
+    if conversion:
+        add("-" * 70)
+        add("CONVERSION")
+        add("-" * 70)
+        add(f"  Converted to PDF via {conversion.get('converter', '?')} "
+            f"(layout simplified; content-faithful).")
+        dropped = conversion.get("dropped_elements", 0)
+        if dropped:
+            add(f"  ! {dropped} element(s) could NOT be converted and are "
+                f"OMITTED from the")
+            add("    output (omitted content cannot leak, but review the "
+                "original if needed).")
+        for note in conversion.get("notes", []):
+            for i, line in enumerate(_wrap(str(note), 66)):
+                add(("  - " if i == 0 else "    ") + line)
+        add("")
 
     add("-" * 70)
     add("MATCHES BY CATEGORY")
@@ -732,6 +793,294 @@ def _wrap(text: str, width: int) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Format routing — dispatch non-PDF inputs to src/handlers/* modules
+# ---------------------------------------------------------------------------
+from handlers.common import UnsupportedFormatError  # noqa: E402
+
+TEXT_EXTENSIONS = {".txt", ".md", ".log", ".json", ".yaml", ".yml",
+                   ".xml", ".html", ".htm"}
+CSV_EXTENSIONS = {".csv", ".tsv"}
+OFFICE_EXTENSIONS = {".docx", ".pptx"}
+EXCEL_EXTENSIONS = {".xlsx"}
+
+
+def route_input(path: Path):
+    """Classify the input by magic bytes first, extension second —
+    extensions lie, and a PDF renamed .png must still hit the PDF path.
+    Returns (kind, handler_module_or_None)."""
+    with open(path, "rb") as f:
+        head = f.read(8)
+    ext = path.suffix.lower()
+    if head.startswith(b"%PDF"):
+        return "pdf", None  # includes PDF-compatible .ai files
+    if head.startswith(b"PK\x03\x04"):
+        if ext in OFFICE_EXTENSIONS:
+            from handlers import office_handler
+            return "office", office_handler
+        if ext in EXCEL_EXTENSIONS:
+            from handlers import excel_handler
+            return "excel", excel_handler
+        return "unsupported", None
+    from handlers import image_handler
+    if ext in image_handler.SUPPORTED_EXTENSIONS:
+        return "image", image_handler
+    if ext in CSV_EXTENSIONS:
+        from handlers import csv_handler
+        return "csv", csv_handler
+    if ext in TEXT_EXTENSIONS or _sniffs_as_text(path):
+        from handlers import text_handler
+        return "text", text_handler
+    return "unsupported", None
+
+
+def _sniffs_as_text(path: Path) -> bool:
+    try:
+        with open(path, "rb") as f:
+            f.read(4096).decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        return False
+
+
+def resolve_outputs(args, input_path: Path, out_ext: str):
+    """Name outputs <stem>_redacted.<ext>, inserting the original extension
+    when the format changes (foo.docx -> foo_docx_redacted.pdf) so two
+    inputs with the same stem can't collide in output/."""
+    if input_path.suffix.lower() == out_ext:
+        name = f"{input_path.stem}_redacted{out_ext}"
+    else:
+        orig = input_path.suffix.lower().lstrip(".")
+        name = f"{input_path.stem}_{orig}_redacted{out_ext}"
+    if args.output:
+        op = Path(args.output).expanduser()
+        output_path = op / name if op.is_dir() else op
+    else:
+        output_path = input_path.with_name(name)
+    report_path = (Path(args.report).expanduser() if args.report
+                   else output_path.with_name(output_path.stem + "_report.txt"))
+    return output_path, report_path
+
+
+def tabular_categories(categories: dict) -> dict:
+    """Detector set for spreadsheets/CSV: drop the bare digit-run account
+    pattern. In tables it would mass-redact amounts-in-cents, share counts,
+    and order IDs — violating the never-redact-financial-data rule. Labeled
+    account numbers still match via header-as-context scanning in the
+    tabular handlers."""
+    out = dict(categories)
+    if "account_number" in out:
+        out["account_number"] = [
+            p for p in out["account_number"]
+            if p["group"] or "Xx*•" in p["regex"].pattern]
+    return out
+
+
+def lint_config(cfg: dict) -> list:
+    """Warn about config keys the tool does not understand — a typo like
+    'custom_term:' must never silently reduce redaction."""
+    warnings = []
+    known = {"preset", "categories", "custom_terms", "exclude_terms",
+             "options", "custom_patterns"}
+    for k in cfg:
+        if k not in known:
+            warnings.append(f"unknown setting {k!r} is ignored "
+                            f"(known: {', '.join(sorted(known))})")
+    opts = cfg.get("options") or {}
+    known_opts = {"ocr", "redact_barcodes", "output", "office_converter"}
+    for k in opts if isinstance(opts, dict) else ():
+        if k not in known_opts:
+            warnings.append(f"unknown option {k!r} is ignored")
+    out = opts.get("output") if isinstance(opts, dict) else None
+    for k in out if isinstance(out, dict) else ():
+        if k not in {"images", "documents"}:
+            warnings.append(f"unknown output setting {k!r} is ignored")
+    return warnings
+
+
+def run_convert_flow(handler, kind, args, input_path, preset, categories,
+                     exclude, opts, use_ocr, redact_barcodes, dry_run):
+    """Kind A handlers (images, docx, pptx): convert to PDF, redact through
+    the proven PDF pipeline, optionally render images back to their
+    original format. Returns the process exit code."""
+    try:
+        pdf_bytes, info = handler.to_pdf(input_path, opts)
+    except UnsupportedFormatError as e:
+        print(f"Unsupported: {e}")
+        return 4
+
+    image_mode = ((opts.get("output") or {}).get("images", "original")
+                  if kind == "image" else None)
+    if kind == "image" and image_mode == "png":
+        out_ext = ".png"
+    elif kind == "image" and image_mode != "pdf":
+        out_ext = input_path.suffix.lower()
+    else:
+        out_ext = ".pdf"
+    output_path, report_path = resolve_outputs(args, input_path, out_ext)
+
+    dropped = info.get("dropped_elements", 0)
+    print(f"Format  : {kind} → PDF via {info.get('converter', '?')}"
+          + (f"; {dropped} element(s) could not be converted" if dropped else ""))
+
+    work_pdf = output_path.with_name("." + output_path.name + ".work.pdf")
+    redacted_pdf = (output_path if out_ext == ".pdf" else
+                    output_path.with_name("." + output_path.name + ".redacted.pdf"))
+    work_pdf.write_bytes(pdf_bytes)
+    try:
+        results = process_pdf(work_pdf, redacted_pdf, categories,
+                              dry_run=dry_run, redact_barcodes=redact_barcodes,
+                              exclude=exclude, use_ocr=use_ocr)
+        if results["total_text_chars"] == 0:
+            if kind == "image":
+                # A photo with no readable text is normal — barcodes and
+                # metadata are still handled; just say so.
+                info.setdefault("notes", []).append(
+                    "no readable text found in the image (OCR)")
+            else:
+                print("\n*** Conversion produced NO text — the document "
+                      "could not be read. NOTHING was redacted. ***")
+                if not dry_run and redacted_pdf.exists():
+                    redacted_pdf.unlink()
+                return 2
+
+        remaining = None
+        if not dry_run:
+            remaining = verify_output(redacted_pdf, categories,
+                                      ocr_pages=set(results["ocr_pages"]),
+                                      exclude=exclude)
+            if kind == "image" and out_ext != ".pdf":
+                doc = fitz.open(redacted_pdf)
+                output_path = handler.write_back(doc, input_path,
+                                                 output_path, opts)
+                doc.close()
+
+        write_report(report_path, input_path, output_path, preset,
+                     results, remaining, dry_run, conversion=info)
+
+        total = sum(results["counts"].values())
+        print(f"\nMatches : {total} across {len(results['counts'])} categories")
+        for note in info.get("notes", []):
+            print(f"Note    : {note}")
+        if not dry_run:
+            print(f"Output  : {output_path}")
+            print("Verify  : PASS — output re-scanned, 0 remaining matches."
+                  if remaining == {} else
+                  "Verify  : *** FAIL — sensitive text remains in output. "
+                  "See report. Do not share the file. ***")
+        print(f"Report  : {report_path}")
+        if remaining:
+            return 3
+        if results["scanned_pages"]:
+            return 2
+        return 0
+    finally:
+        work_pdf.unlink(missing_ok=True)
+        if redacted_pdf != output_path:
+            redacted_pdf.unlink(missing_ok=True)
+
+
+def run_native_flow(handler, kind, args, input_path, preset, categories,
+                    exclude, opts, dry_run):
+    """Kind B handlers (text, csv, xlsx): the handler redacts natively in
+    its own format and verifies its own output. Returns the exit code."""
+    cats = (tabular_categories(categories) if kind in ("csv", "excel")
+            else categories)
+
+    def matcher(text):
+        return find_matches_in_text(text, cats, exclude)
+
+    output_path, report_path = resolve_outputs(
+        args, input_path, input_path.suffix.lower())
+    print(f"Format  : {kind} (native redaction, {input_path.suffix} in/out)")
+    try:
+        results = handler.redact_file(input_path, output_path, matcher,
+                                      dry_run, opts)
+    except UnsupportedFormatError as e:
+        print(f"Unsupported: {e}")
+        return 4
+    remaining = None
+    if not dry_run:
+        remaining = handler.verify_file(output_path, matcher, opts)
+    write_native_report(report_path, input_path, output_path, preset,
+                        results, remaining, dry_run)
+    total = sum(results["counts"].values())
+    print(f"\nMatches : {total} across {len(results['counts'])} categories")
+    for note in results.get("notes", []):
+        print(f"Note    : {note}")
+    if not dry_run:
+        print(f"Output  : {output_path}")
+        print("Verify  : PASS — output re-scanned, 0 remaining matches."
+              if remaining == {} else
+              "Verify  : *** FAIL — sensitive text remains in output. "
+              "See report. Do not share the file. ***")
+    print(f"Report  : {report_path}")
+    return 3 if remaining else 0
+
+
+def write_native_report(report_path, input_path, output_path, preset,
+                        results, remaining, dry_run):
+    """Report for natively redacted formats (text/csv/xlsx)."""
+    lines = []
+    add = lines.append
+    bar = "=" * 70
+    add(bar)
+    add("REDACTION " + ("DRY-RUN (preview) " if dry_run else "") + "REPORT")
+    add(bar)
+    add(f"Generated : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (local)")
+    add(f"Input     : {input_path}")
+    add(f"Output    : {'(none — dry run)' if dry_run else output_path}")
+    add(f"Preset    : {preset}")
+    add(f"Scanned   : {results.get('unit_count', '?')} "
+        f"{results.get('unit_label', 'unit')}(s)")
+    add("")
+    add("-" * 70)
+    add("MATCHES BY CATEGORY")
+    add("-" * 70)
+    if results["counts"]:
+        for cat in sorted(results["counts"]):
+            add(f"  {CATEGORY_LABELS.get(cat, cat):<32} "
+                f"{results['counts'][cat]:>4} match(es)")
+    else:
+        add("  No matches found for the enabled categories.")
+    add("")
+    add("-" * 70)
+    add(f"DETAIL ({results.get('unit_label', 'unit')} / category / matched text)")
+    add("-" * 70)
+    for unit, cat, matched, _ in results.get("matches", []):
+        shown = (" ".join(str(matched).split()) if dry_run
+                 else mask_value(str(matched)))
+        add(f"  {unit:<14} {CATEGORY_LABELS.get(cat, cat):<28} {shown}")
+    if not results.get("matches"):
+        add("  (none)")
+    add("")
+    if results.get("notes"):
+        add("-" * 70)
+        add("NOTES")
+        add("-" * 70)
+        for note in results["notes"]:
+            for i, line in enumerate(_wrap(str(note), 66)):
+                add(("  - " if i == 0 else "    ") + line)
+        add("")
+    add("-" * 70)
+    add("POST-REDACTION VERIFICATION")
+    add("-" * 70)
+    if dry_run:
+        add("  Skipped (dry run — no output file was created).")
+    elif not remaining:
+        add("  PASS — the output was re-opened and re-scanned with the same")
+        add("  patterns: 0 remaining matches.")
+    else:
+        add("  *** FAIL — re-scan of the OUTPUT still finds matches: ***")
+        for cat, n in sorted(remaining.items()):
+            add(f"    {CATEGORY_LABELS.get(cat, cat)}: {n}")
+        add("  Do NOT share this file. Review it manually.")
+    add("")
+    add("Reminder: automated redaction is a first pass, not a guarantee.")
+    add(bar)
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 def main():
@@ -744,7 +1093,9 @@ def main():
                "  python3 redact.py statement.pdf --preset financial\n"
                "  python3 redact.py labs.pdf --preset medical --dry-run\n"
                "  python3 redact.py doc.pdf -o clean.pdf --config redact_config.yaml\n")
-    parser.add_argument("input", nargs="?", help="Path to the PDF to redact")
+    parser.add_argument("input", nargs="?",
+                        help="File to redact: PDF, image (jpg/png/tiff/…), "
+                             "docx, pptx, xlsx, csv/tsv, or text")
     parser.add_argument("-p", "--preset", choices=sorted(PRESETS),
                         help="Document-type preset (default: the config's "
                              "'preset' setting, else general = all categories)")
@@ -763,6 +1114,9 @@ def main():
     parser.add_argument("--report", help="Report path (default: <output>_report.txt)")
     parser.add_argument("--list-categories", action="store_true",
                         help="List available categories and presets, then exit")
+    parser.add_argument("--check-config", action="store_true",
+                        help="Print exactly what the config resolves to "
+                             "(terms, switches, options), then exit")
     args = parser.parse_args()
 
     if args.list_categories:
@@ -773,19 +1127,6 @@ def main():
         for name, cats in PRESETS.items():
             print(f"  {name:<10} {', '.join(cats)}")
         return
-
-    if not args.input:
-        parser.error("input PDF is required (or use --list-categories)")
-    input_path = Path(args.input).expanduser()
-    if not input_path.exists():
-        sys.exit(f"Input file not found: {input_path}")
-    if input_path.suffix.lower() != ".pdf":
-        sys.exit(f"Input must be a PDF: {input_path}")
-
-    output_path = (Path(args.output).expanduser() if args.output
-                   else input_path.with_name(input_path.stem + "_redacted.pdf"))
-    report_path = (Path(args.report).expanduser() if args.report
-                   else output_path.with_name(output_path.stem + "_report.txt"))
 
     # The default config is applied on EVERY run; --config swaps in another
     # one. An explicitly named config that doesn't exist is an error (never
@@ -802,6 +1143,8 @@ def main():
         if not config_path.exists():
             config_path = PROJECT_ROOT / DEFAULT_CONFIG
     cfg = load_config(config_path)
+    for w in lint_config(cfg):
+        print(f"  ! Config: {w}")
 
     # Preset: command line beats the config's 'preset', which beats general.
     preset = args.preset or cfg.get("preset") or "general"
@@ -843,6 +1186,37 @@ def main():
     use_ocr = bool(opts.get("ocr", True))
     redact_barcodes = bool(opts.get("redact_barcodes", True))
 
+    exclude = tuple(t.lower() for t in flatten_terms(cfg.get("exclude_terms"))
+                    if len(t) >= 2)
+
+    if args.check_config:
+        print(f"Config    : {config_path}"
+              + ("" if config_path.exists() else "  (NOT FOUND)"))
+        print(f"Preset    : {preset}")
+        print(f"Categories: {', '.join(categories) or '(none)'}")
+        if forced_on:
+            print(f"Always on : {', '.join(forced_on)}")
+        if forced_off:
+            print(f"Never     : {', '.join(forced_off)}")
+        terms = list(flatten_terms(cfg.get("custom_terms")))
+        print(f"Custom terms ({len(terms)}):")
+        for t in terms:
+            print(f"  - {t}")
+        print(f"Exclude terms ({len(exclude)}):")
+        for t in exclude:
+            print(f"  - {t}")
+        print(f"Options   : ocr={use_ocr}, redact_barcodes={redact_barcodes}, "
+              f"output.images="
+              f"{(opts.get('output') or {}).get('images', 'original')}")
+        return
+
+    if not args.input:
+        parser.error("input file is required "
+                     "(or use --list-categories / --check-config)")
+    input_path = Path(args.input).expanduser()
+    if not input_path.exists():
+        sys.exit(f"Input file not found: {input_path}")
+
     mode = "DRY RUN (preview only)" if args.dry_run else "REDACT"
     print(f"Mode    : {mode}")
     print(f"Input   : {input_path}")
@@ -861,9 +1235,24 @@ def main():
     if preset in PRESET_NOTES:
         print(f"Note    : {PRESET_NOTES[preset]}")
 
-    exclude = tuple(str(t).lower() for t in (cfg.get("exclude_terms") or [])
-                    if len(str(t).strip()) >= 2)
+    # Route by sniffed format: PDFs continue below; everything else goes
+    # through its handler (convert-to-PDF or native redaction).
+    kind, handler = route_input(input_path)
+    if kind == "unsupported":
+        print(f"Unsupported file type: {input_path.name}\n"
+              f"Supported: PDF, images (jpg/png/tiff/heic/…), docx, pptx, "
+              f"xlsx, csv/tsv, and text files.\n"
+              f"Export the document to one of those and re-run.")
+        sys.exit(4)
+    if kind in ("image", "office"):
+        sys.exit(run_convert_flow(handler, kind, args, input_path, preset,
+                                  categories, exclude, opts, use_ocr,
+                                  redact_barcodes, args.dry_run))
+    if kind in ("text", "csv", "excel"):
+        sys.exit(run_native_flow(handler, kind, args, input_path, preset,
+                                 categories, exclude, opts, args.dry_run))
 
+    output_path, report_path = resolve_outputs(args, input_path, ".pdf")
     results = process_pdf(input_path, output_path, categories,
                           dry_run=args.dry_run,
                           redact_barcodes=redact_barcodes,
