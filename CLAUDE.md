@@ -49,6 +49,27 @@ wheels for pinned deps), PyMuPDF.
 - Every new handler MUST implement post-redaction verification
   (verify_file / re-scan of the written output). No verification = does
   not ship. Run `./scripts/test.sh` after any detection or handler change.
+- `route_input()` classifies by magic bytes before extension for a
+  reason: RTF/EML are plain ASCII and would otherwise fall into the
+  generic text-sniff fallback and get corrupted (control codes /
+  boundaries treated as plain content) — a real bug found while adding
+  the legacy Office/email handlers. New magic-byte-ambiguous formats
+  (anything ASCII, or sharing OLE2/zip signatures with other formats)
+  need the same explicit interception, not the fallback.
+- `resolve_outputs()`'s report path is derived from the output's FULL
+  filename (extension included), never `.stem` — `.stem` strips only the
+  last extension, so two same-stem different-extension outputs (e.g.
+  `foo_redacted.txt` and `foo_redacted.yaml`, an ordinary same-directory
+  batch) would silently collapse to one report, each overwriting the
+  other's audit trail. A real bug found while building
+  `combine_outputs.py`, which trusts each file's report to decide
+  whether it's safe to merge.
+- `office_converter: msoffice` (AppleScript automation of installed MS
+  Office) is a documented dead end, not an unimplemented feature — live-
+  tested against this Mac's real Word install and confirmed broken (no
+  working AppleScript PDF export in this build). Selecting it must keep
+  erroring clearly; do not "fix" it by guessing new AppleScript without
+  live-testing against a real running Office app first.
 
 ## Commands
 
@@ -64,7 +85,8 @@ wheels for pinned deps), PyMuPDF.
 Verification for changes: `./scripts/test.sh` (generates fixtures for
 every format, redacts, asserts planted PII gone + $12,345.67 survives),
 plus `./scripts/run.sh` over input/ expecting all PASS. Exit codes:
-0 ok / 2 unreadable pages / 3 verify failed / 4 unsupported format.
+0 ok / 2 unreadable pages / 3 verify failed / 4 unsupported format /
+5 encrypted, could not open.
 
 ## Layout
 
@@ -79,6 +101,12 @@ plus `./scripts/run.sh` over input/ expecting all PASS. Exit codes:
   handlers expose `to_pdf`/`write_back`; Kind B native handlers expose
   `redact_file`/`verify_file`, both mandatory). Every handler MUST
   implement post-redaction verification — no verification, does not ship.
+  `pdf_render.py` is the shared text-to-PDF renderer (`PdfFlow`,
+  `html_to_text()`, `render_to_pdf_bytes()`) — reuse it rather than
+  reimplementing text-flow/wrap logic in a new handler.
+  `vision_helper.py` wraps Apple Vision (face/handwriting) — lazy-import
+  Vision/Quartz inside functions, never at module top, since the three
+  options that use it default off.
 - `src/make_sample_pdf.py` — writes fake-data test PDFs into `input/`
   (one searchable, one image-only for the OCR path).
 - `tests/make_*_fixtures.py` + `tests/check_outputs.py` — planted-PII
@@ -87,11 +115,14 @@ plus `./scripts/run.sh` over input/ expecting all PASS. Exit codes:
 - `scripts/redact.sh` — thin single-file wrapper running src/redact.py
   with `.venv`'s Python.
 - `scripts/run.sh` — bootstraps Homebrew python@3.13 (rebuilds `.venv` on
-  version mismatch), deps, Tesseract, personal config; batch-processes
-  every file in `input/` to `output/` (any supported format, not just
-  PDF); empties `output/` (except .gitkeep) at the start of each run;
+  version mismatch), deps, Tesseract, personal config; prompts (once,
+  cached in `config/.libreoffice_declined`) to install LibreOffice via
+  Homebrew if the batch needs it and it's absent; batch-processes every
+  file in `input/` to `output/` (any supported format, not just PDF);
+  empties `output/` (except .gitkeep) at the start of each run;
   classifies redact.py exit codes (0 ok / 2 unreadable / 3 verify failed /
-  4 unsupported).
+  4 unsupported / 5 encrypted); `--combine` runs `src/combine_outputs.py`
+  over `output/` afterward.
 - `scripts/test.sh` — required regression gate; run after any change to
   detection patterns or handlers.
 - `docs/RUNBOOK.md`, `docs/ARCHITECTURE.md`, `docs/CONFIGURATION.md` —
@@ -101,9 +132,11 @@ plus `./scripts/run.sh` over input/ expecting all PASS. Exit codes:
   EXECUTED 2026-07-09 (§8 has the execution record, deviations, and bugs
   the test suite found); `handler-spec.md`: the handler contract —
   consult before touching or adding a handler; `expansion-plan.md`:
-  PROPOSED plan (decisions locked 2026-07-10) for legacy Office/RTF,
-  email, epub, passwords, Apple Vision handwriting/faces, and
-  everything-to-PDF + combine-into-one-PDF.
+  legacy Office/RTF, email, epub, passwords, Apple Vision handwriting/
+  faces, and everything-to-PDF + combine-into-one-PDF — EXECUTED
+  2026-07-10 (§8 has the execution record; MS Office AppleScript
+  automation is a documented dead end, not missing; `.msg`/`redact_faces`
+  are implemented but fixture-unverified — see §8 before trusting them).
 - `custom_terms`/`exclude_terms` accept flat lists OR grouped mappings —
   `flatten_terms()` handles both. This was a real silent-miss bug (group
   labels matched instead of names); never regress it.
@@ -111,11 +144,15 @@ plus `./scripts/run.sh` over input/ expecting all PASS. Exit codes:
   `categories` (per-detector true/false switches over the preset; email,
   phone, ssn, drivers_license, passport, credit_card ship as `true`),
   `custom_terms`, `exclude_terms`, `options` (ocr / redact_barcodes /
-  output.images), `custom_patterns`; loaded by default on every run
+  office_converter / handwriting_ocr / redact_handwriting / redact_faces /
+  output.images / output.everything / output.combine), `passwords`
+  (top-level filename→password map — may now hold secrets, not just
+  sensitive terms), `custom_patterns`; loaded by default on every run
   (`--config` overrides; missing explicit config = hard error). Gitignored
   and auto-created by run.sh from `config/redact_config.example.yaml` —
   edit the example for template changes; never commit or echo the
-  personal copy's contents. All settings documented in
+  personal copy's contents, and NEVER print `passwords` values anywhere
+  (`--check-config` shows a count only). All settings documented in
   `docs/CONFIGURATION.md` — keep it in sync. `--check-config` prints the
   fully resolved config for auditing.
 - README is deliberately simple/non-technical (drop in input/, run.sh,

@@ -1,0 +1,300 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1783691378516,
+  "projectRoot": "/Users/john.baczkowski/Repos/ai-redact",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Python",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "requirements.txt"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "pip",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": "snake_case",
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "docs",
+      "scripts",
+      "src",
+      "tests"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "config": {
+      "path": "config",
+      "purpose": "Configuration files",
+      "fileCount": 1,
+      "lastAccessed": 1783691378443,
+      "keyFiles": [
+        "redact_config.example.yaml"
+      ]
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 3,
+      "lastAccessed": 1783691378450,
+      "keyFiles": [
+        "ARCHITECTURE.md",
+        "CONFIGURATION.md",
+        "RUNBOOK.md"
+      ]
+    },
+    "input": {
+      "path": "input",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1783691378456,
+      "keyFiles": []
+    },
+    "output": {
+      "path": "output",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1783691378461,
+      "keyFiles": []
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 3,
+      "lastAccessed": 1783691378462,
+      "keyFiles": [
+        "redact.sh",
+        "run.sh",
+        "test.sh"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 2,
+      "lastAccessed": 1783691378464,
+      "keyFiles": [
+        "make_sample_pdf.py",
+        "redact.py"
+      ]
+    },
+    "tests": {
+      "path": "tests",
+      "purpose": "Test files",
+      "fileCount": 4,
+      "lastAccessed": 1783691378465,
+      "keyFiles": [
+        "check_outputs.py",
+        "make_image_fixtures.py",
+        "make_office_fixtures.py",
+        "make_text_fixtures.py"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "src/redact.py",
+      "accessCount": 100,
+      "lastAccessed": 1783696383229,
+      "type": "file"
+    },
+    {
+      "path": "scripts/run.sh",
+      "accessCount": 16,
+      "lastAccessed": 1783696530705,
+      "type": "file"
+    },
+    {
+      "path": "scripts/test.sh",
+      "accessCount": 13,
+      "lastAccessed": 1783696476285,
+      "type": "file"
+    },
+    {
+      "path": "docs/ARCHITECTURE.md",
+      "accessCount": 11,
+      "lastAccessed": 1783696786318,
+      "type": "file"
+    },
+    {
+      "path": "docs/RUNBOOK.md",
+      "accessCount": 9,
+      "lastAccessed": 1783696858466,
+      "type": "file"
+    },
+    {
+      "path": "docs/plans/expansion-plan.md",
+      "accessCount": 9,
+      "lastAccessed": 1783696925378,
+      "type": "file"
+    },
+    {
+      "path": "docs/CONFIGURATION.md",
+      "accessCount": 7,
+      "lastAccessed": 1783696680444,
+      "type": "file"
+    },
+    {
+      "path": "CLAUDE.md",
+      "accessCount": 7,
+      "lastAccessed": 1783697014152,
+      "type": "file"
+    },
+    {
+      "path": "requirements.txt",
+      "accessCount": 6,
+      "lastAccessed": 1783696042934,
+      "type": "file"
+    },
+    {
+      "path": "config/redact_config.example.yaml",
+      "accessCount": 6,
+      "lastAccessed": 1783696553392,
+      "type": "file"
+    },
+    {
+      "path": "src/handlers/pdf_render.py",
+      "accessCount": 5,
+      "lastAccessed": 1783694685639,
+      "type": "file"
+    },
+    {
+      "path": "src/handlers/email_handler.py",
+      "accessCount": 5,
+      "lastAccessed": 1783694728545,
+      "type": "file"
+    },
+    {
+      "path": "src/handlers/office_handler.py",
+      "accessCount": 2,
+      "lastAccessed": 1783691808070,
+      "type": "file"
+    },
+    {
+      "path": "src/combine_outputs.py",
+      "accessCount": 2,
+      "lastAccessed": 1783693755690,
+      "type": "file"
+    },
+    {
+      "path": "src/handlers/epub_handler.py",
+      "accessCount": 2,
+      "lastAccessed": 1783694769388,
+      "type": "file"
+    },
+    {
+      "path": "src/handlers/common.py",
+      "accessCount": 2,
+      "lastAccessed": 1783695288913,
+      "type": "file"
+    },
+    {
+      "path": "README.md",
+      "accessCount": 2,
+      "lastAccessed": 1783696619143,
+      "type": "file"
+    },
+    {
+      "path": "docs/plans/handler-spec.md",
+      "accessCount": 1,
+      "lastAccessed": 1783691548325,
+      "type": "file"
+    },
+    {
+      "path": "src/handlers/legacy_office_handler.py",
+      "accessCount": 1,
+      "lastAccessed": 1783691893755,
+      "type": "file"
+    },
+    {
+      "path": "tests/make_office_fixtures.py",
+      "accessCount": 1,
+      "lastAccessed": 1783691997512,
+      "type": "file"
+    },
+    {
+      "path": "tests/check_outputs.py",
+      "accessCount": 1,
+      "lastAccessed": 1783692006737,
+      "type": "file"
+    },
+    {
+      "path": "tests/make_legacy_office_fixtures.py",
+      "accessCount": 1,
+      "lastAccessed": 1783692035137,
+      "type": "file"
+    },
+    {
+      "path": "src/handlers/libreoffice_handler.py",
+      "accessCount": 1,
+      "lastAccessed": 1783692244322,
+      "type": "file"
+    },
+    {
+      "path": "tests/make_email_fixtures.py",
+      "accessCount": 1,
+      "lastAccessed": 1783694524319,
+      "type": "file"
+    },
+    {
+      "path": "src/handlers/text_handler.py",
+      "accessCount": 1,
+      "lastAccessed": 1783694648090,
+      "type": "file"
+    },
+    {
+      "path": "tests/make_epub_fixtures.py",
+      "accessCount": 1,
+      "lastAccessed": 1783694924361,
+      "type": "file"
+    },
+    {
+      "path": "tests/make_encrypted_fixtures.py",
+      "accessCount": 1,
+      "lastAccessed": 1783695755281,
+      "type": "file"
+    },
+    {
+      "path": "src/handlers/vision_helper.py",
+      "accessCount": 1,
+      "lastAccessed": 1783696035103,
+      "type": "file"
+    },
+    {
+      "path": "tests/make_vision_fixtures.py",
+      "accessCount": 1,
+      "lastAccessed": 1783696441563,
+      "type": "file"
+    },
+    {
+      "path": "docs/plans/format-support-plan.md",
+      "accessCount": 1,
+      "lastAccessed": 1783696873103,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

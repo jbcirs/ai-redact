@@ -92,6 +92,38 @@ options:
                           # matching image regions (needs: brew install tesseract)
   redact_barcodes: true   # blank QR codes/barcodes when detectable
                           # (needs: brew install zbar + pip install pyzbar pillow)
+  # office_converter: auto   # auto (default) | simple | libreoffice
+                             # auto = LibreOffice if installed, else the
+                             # built-in pure-Python converter for .docx/.pptx.
+                             # .xls/.ppt/.odp ALWAYS need LibreOffice (no
+                             # pure-Python reader exists for them) — run.sh
+                             # offers to install it (brew, ~700 MB, offline)
+                             # the first time such a file appears in input/.
+                             # "simple" forces the built-in converter
+                             # (fails for .xls/.ppt/.odp); "libreoffice"
+                             # forces LibreOffice even for .docx/.pptx
+                             # (higher layout fidelity, not simplified).
+  output:
+    # everything: original   # original (default) | pdf — force ALL
+                              # outputs (text/csv/xlsx) to PDF too.
+    # combine: false         # true = ALSO write output/combined_redacted.pdf
+                              # merging every redacted output from this run
+                              # (individual outputs are still written).
+                              # Same as run.sh's --combine flag.
+
+  # Apple Vision (on-device, offline) for images/scanned pages. ALL default
+  # false — opt in deliberately. Best-effort, not a guarantee: always skim
+  # the output before sharing. See docs/CONFIGURATION.md.
+  # handwriting_ocr: false    # recognize handwritten/printed text with
+                               # Vision and redact only what MATCHES your
+                               # categories/custom_terms (same rules as
+                               # everywhere else, incl. exclude_terms).
+  # redact_handwriting: false # blanket: black out EVERY handwriting-shaped
+                               # region, matched or not. The only mechanism
+                               # that reliably catches a signature — there is
+                               # no signature-specific detector.
+  # redact_faces: false       # black out detected face rectangles (solid
+                               # boxes, not blurs — boxes aren't reversible).
 
 
 # ----------------------------------------------------------------

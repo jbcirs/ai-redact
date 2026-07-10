@@ -8,9 +8,12 @@ Step-by-step operating guide. For how the tool works internally, see
 1. **Move anything you want to keep out of `output/`** — it is emptied at
    the start of every run.
 2. Drop the documents to redact into `input/` (Finder is fine). Supported:
-   PDF, Word (.docx), PowerPoint (.pptx), Excel (.xlsx), CSV/TSV,
-   text/HTML/JSON/YAML/XML, and images (jpg, png, tiff, heic, webp, gif,
-   avif, bmp, ico, psd, camera RAW). Anything else lands in an
+   PDF (incl. password-protected), Word/PowerPoint (.docx/.pptx, plus
+   legacy .doc/.odt/.rtf built-in and .ppt/.odp/.xls via LibreOffice),
+   Excel (.xlsx, incl. password-protected), CSV/TSV,
+   text/HTML/JSON/YAML/XML, email (.eml/.msg — attachments redacted too),
+   EPUB, and images (jpg, png, tiff, heic, webp, gif, avif, bmp, ico, psd,
+   camera RAW). Anything else (iWork files, DRM'd ebooks) lands in an
    "Unsupported" bucket in the summary — nothing is guessed at.
 3. From the project folder, run:
 
@@ -43,8 +46,22 @@ matched values so you can check accuracy; real-run reports mask them.
 ```bash
 ./scripts/redact.sh path/to/file.pdf --preset medical
 ./scripts/redact.sh path/to/file.pdf --categories email,phone -o custom_name.pdf
+./scripts/redact.sh protected.pdf --password "the-password"
 ./scripts/redact.sh --list-categories
 ```
+
+## Combining everything into one PDF
+
+```bash
+./scripts/run.sh financial --combine
+```
+
+Writes `output/combined_redacted.pdf` (all of this run's outputs merged,
+in filename order, with a table of contents) ALONGSIDE the individual
+outputs — never instead of them. Refuses (prints which file, exits
+non-zero) if any individual output didn't pass verification; the
+combined PDF is also independently re-verified as a whole. Same as
+setting `output.combine: true` in the config.
 
 ## The config file
 
@@ -61,7 +78,11 @@ and used by default on every run. Everything it can do is defined in
 - `preset` — your default document type when the command line doesn't say.
 - `exclude_terms` — never-redact list for recurring false positives (e.g.
   a company's public 800 number).
-- `options` — toggles for OCR and QR/barcode blanking.
+- `options` — toggles for OCR, QR/barcode blanking, which Office
+  converter to use, everything-to-PDF/combine, and Apple Vision
+  handwriting/face redaction (all opt-in, off by default).
+- `passwords` — filename → password map for encrypted PDFs/Office files
+  (batch runs); `--password` covers one-off single files.
 
 To run with a different config: `--config other.yaml` (works for both
 `./scripts/redact.sh` and `./scripts/run.sh <preset> --config other.yaml`).
@@ -109,11 +130,15 @@ being redacted (check the YAML structure).
 | A name/ID slipped through | Not in any pattern and not in your custom list | Add the exact text to `custom_terms` in `config/redact_config.yaml`, re-run. |
 | Something was redacted that shouldn't be | Pattern false positive | Add the exact text to `exclude_terms` in `config/redact_config.yaml`, or drop the offending category via `--categories`. |
 | `EMBEDDED FILE ATTACHMENTS` in report | The PDF carried file attachments (invisible on the page) | They were removed automatically — nothing to do, just be aware the original had them. |
+| `Encrypted` in batch summary / exit code 5 | File is password-protected and couldn't be opened | Pass `--password`, or add the file to the config's `passwords:` map, and re-run. |
+| `Unsupported` for `.xls`/`.ppt`/`.odp` | LibreOffice isn't installed and you declined the prompt | Re-run interactively and accept, or `brew install --cask libreoffice` yourself, or export the file as .docx/.pptx/.xlsx. |
+| `office_converter: msoffice` errors immediately | MS Office AppleScript automation doesn't work on this machine (verified) | Use `office_converter: libreoffice` or `simple` instead — this isn't a config mistake, see docs/CONFIGURATION.md. |
 | `Setup has not been run yet` from `./scripts/redact.sh` | No `.venv` | Run `./scripts/run.sh` once, or follow the manual setup in the README. |
 
 Exit codes (single-file `./scripts/redact.sh`): `0` fully redacted + verified, `2`
-unreadable page(s) remain, `3` verification failed. `scripts/run.sh` sorts
-files into the summary buckets using these.
+unreadable page(s) remain, `3` verification failed, `4` unsupported file
+type, `5` password-protected/could not open. `scripts/run.sh` sorts files
+into the summary buckets using these.
 
 ## What can still be inferred from a redacted PDF
 

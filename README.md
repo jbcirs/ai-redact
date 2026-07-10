@@ -16,25 +16,31 @@ Everything runs on your Mac. Nothing is ever uploaded anywhere.
 
 | Type | Extensions | Comes back as |
 |---|---|---|
-| PDF | `.pdf` | PDF |
-| Word | `.docx` | PDF (Word files can hide tracked changes/comments — PDF avoids leaking them) |
+| PDF | `.pdf` (incl. password-protected — see below) | PDF |
+| Word | `.docx`, legacy `.doc`, `.odt`, `.rtf` | PDF (Word files can hide tracked changes/comments — PDF avoids leaking them) |
 | PowerPoint | `.pptx` | PDF |
-| Excel | `.xlsx` | Excel (values only — formulas are dropped so a redacted cell can't be reconstructed) |
+| Legacy Word/PowerPoint/Excel | `.doc`/`.odt`/`.rtf` (built-in, zero extra install), `.ppt`/`.odp`/`.xls` (needs free LibreOffice — you'll be prompted to install it once) | PDF |
+| Excel | `.xlsx` (incl. password-protected) | Excel (values only — formulas are dropped so a redacted cell can't be reconstructed) |
 | Spreadsheet text | `.csv`, `.tsv` | same format |
 | Text | `.txt`, `.md`, `.log`, `.json`, `.yaml`, `.yml`, `.xml`, `.html`, `.htm` | same format |
+| Email | `.eml`, `.msg` | PDF (attachments are redacted too, as their own files) |
+| Ebook | `.epub` (not DRM-protected) | PDF |
 | Photos & images | `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`, `.bmp`, `.tif`, `.tiff`, `.heic`, `.heif`, `.avif`, `.ico` | same format by default (GPS/location and all other hidden metadata always stripped) |
 | Camera RAW & Photoshop | `.cr2`, `.cr3`, `.nef`, `.arw`, `.dng`, `.psd` | JPEG or PNG (these formats can't be written back to their original form) |
 
 Scanned pages and photographed documents are read with on-device OCR
-before redacting.
+before redacting. Optional (off by default): recognize/redact handwriting
+and black out faces in images/scanned pages using Apple's on-device
+Vision framework — see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
-**Not yet supported:** legacy Office files (`.doc`, `.ppt`, `.xls`,
-`.rtf`, OpenDocument `.odt`/`.odp`), email files (`.eml`, `.msg`), EPUB,
-password-protected files, and Apple/iWork files (`.pages`, `.numbers`,
-`.key` — export them to PDF or Word first). These are planned; see
-[docs/plans/expansion-plan.md](docs/plans/expansion-plan.md). Anything
-else lands in an "Unsupported" bucket in the batch summary rather than
-being guessed at.
+Password-protected PDFs/Word/Excel/PowerPoint files are supported —
+either pass `--password` for a one-off, or add a `passwords:` map to your
+config for batch runs. Wrong/missing password never fails silently.
+
+**Not yet supported:** Apple/iWork files (`.pages`, `.numbers`, `.key` —
+export them to PDF or Word first) and DRM-protected ebooks (DRM is never
+broken). Anything else lands in an "Unsupported" bucket in the batch
+summary rather than being guessed at.
 
 ## How to use it
 

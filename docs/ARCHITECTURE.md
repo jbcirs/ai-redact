@@ -9,13 +9,22 @@ Local-only PDF redaction pipeline. For day-to-day operation see
 ai-redact/
 ├── src/
 │   ├── redact.py           # engine: detection, PDF pipeline, format router, CLI, reports
+│   ├── combine_outputs.py  # merges a run's outputs into one combined_redacted.pdf
 │   ├── handlers/           # per-format handlers (see "Format handlers" below)
-│   │   ├── common.py       #   shared contract pieces (UnsupportedFormatError, redaction_text)
+│   │   ├── common.py       #   shared contract pieces (UnsupportedFormatError,
+│   │   │                   #   EncryptedFileError, redaction_text)
+│   │   ├── pdf_render.py   #   shared text-to-PDF flow/wrap renderer + html_to_text() +
+│   │   │                   #   render_to_pdf_bytes() (native output → PDF for combine/everything:pdf)
 │   │   ├── text_handler.py #   .txt .md .log .json .yaml .yml .xml .html .htm (native in/out)
 │   │   ├── csv_handler.py  #   .csv .tsv (cell-aware, header-as-context)
 │   │   ├── excel_handler.py#   .xlsx (native values-only out, all sheets incl. hidden)
 │   │   ├── office_handler.py#  .docx .pptx → simplified PDF (Tier-1 pure Python)
-│   │   └── image_handler.py#   rasters + HEIC/AVIF/RAW/PSD → PDF pipeline → write-back
+│   │   ├── legacy_office_handler.py # .doc .odt .rtf → textutil → .docx → Tier-1
+│   │   ├── libreoffice_handler.py   # .xls .ppt .odp (+ Tier-2 fidelity) via local LibreOffice
+│   │   ├── email_handler.py         # .eml .msg → PDF; extract_attachments() for recursion
+│   │   ├── epub_handler.py          # .epub → PDF (spine order, DRM refused outright)
+│   │   ├── image_handler.py#   rasters + HEIC/AVIF/RAW/PSD → PDF pipeline → write-back
+│   │   └── vision_helper.py#   Apple Vision: face detection, handwriting OCR, bbox mapping
 │   └── make_sample_pdf.py  # fake-data test PDF generator (writes to input/)
 ├── tests/
 │   ├── make_*_fixtures.py  # planted-PII fixture generators per format family
@@ -39,8 +48,12 @@ ai-redact/
 ## Design principles
 
 1. **Local only.** No network calls anywhere. Dependencies: PyMuPDF, PyYAML,
-   zxing-cpp/Pillow (QR/barcodes), and Tesseract language data (OCR) — all
-   installed automatically by `scripts/run.sh`.
+   zxing-cpp/Pillow (QR/barcodes), Tesseract language data (OCR),
+   extract-msg (.msg), msoffcrypto-tool (encrypted Office), and
+   pyobjc-framework-Vision/Quartz (handwriting/face detection, opt-in) —
+   all installed automatically by `scripts/run.sh`. LibreOffice (.xls/
+   .ppt/.odp) is the one exception: it's a ~700 MB Homebrew cask, so
+   `run.sh` asks first and remembers the answer, never installs silently.
 2. **True redaction.** PyMuPDF redaction annotations + `apply_redactions()`
    delete the text and blank overlapping image pixels. Never a box drawn
    over intact content.
@@ -59,14 +72,19 @@ first** (extensions lie: a PDF renamed `.png` still routes to the PDF
 path), then dispatches to one of two handler kinds defined in
 `docs/plans/handler-spec.md`:
 
-- **Convert handlers (Kind A)** — images and docx/pptx convert to PDF
-  bytes and ride the proven PDF pipeline below (redaction, OCR,
-  verification). Images can be written back to their original format
-  afterwards (`output.images: original`), rebuilt from pixels so
-  EXIF/GPS/XMP can never survive. Office conversion is Tier-1 pure
-  Python (python-docx/python-pptx → simplified PDF); anything the
-  converter can't carry (textboxes, SmartArt) is counted and reported —
-  omitted content can't leak, but loss is never silent.
+- **Convert handlers (Kind A)** — images, docx/pptx, legacy Office
+  (doc/odt/rtf via `textutil`; xls/ppt/odp via LibreOffice), email
+  (eml/msg), and epub all convert to PDF bytes and ride the proven PDF
+  pipeline below (redaction, OCR, verification). Images can be written
+  back to their original format afterwards (`output.images: original`),
+  rebuilt from pixels so EXIF/GPS/XMP can never survive. Office
+  conversion is Tier-1 pure Python by default (python-docx/python-pptx →
+  simplified PDF) or LibreOffice/Tier-2 fidelity when
+  `office_converter: libreoffice`; anything the converter can't carry
+  (textboxes, SmartArt) is counted and reported — omitted content can't
+  leak, but loss is never silent. Email attachments are recursed through
+  this same router independently (own output, own report, depth-2/
+  100 MB/50-attachment caps).
 - **Native handlers (Kind B)** — text, CSV/TSV, and XLSX redact in their
   own format and implement their own mandatory `verify_file` pass.
   Tabular handlers scan every data cell twice: bare, and as
@@ -74,10 +92,38 @@ path), then dispatches to one of two handler kinds defined in
   unformatted numbers still matches the labeled detectors. The bare
   digit-run account pattern is excluded for tabular formats so numeric
   financial columns are never mass-redacted.
+- **office_converter resolution** (`resolve_office_handler()` in
+  `redact.py`) picks Tier-1/LibreOffice/msoffice for the whole Office
+  family per config; `.xls`/`.ppt`/`.odp` have no Tier-1 path at all, so
+  `auto` falls straight to LibreOffice or refuses. `msoffice` is a named,
+  documented dead end (see below) — it errors with a clear message
+  rather than silently falling back.
+- **Encrypted files** (`encrypted_office` router kind + the PDF path's
+  own `needs_pass`/`authenticate` check) decrypt via msoffcrypto-tool (to
+  a same-named temp file, so output naming matches an unencrypted run of
+  that filename) or PyMuPDF, then re-enter the normal pipeline. Wrong/
+  missing password is `EncryptedFileError` → exit 5, never a silent skip.
+- **Apple Vision** (`vision_helper.py`) runs on any page with image
+  content when `handwriting_ocr`/`redact_handwriting`/`redact_faces` is
+  on (all default off): rasterizes the page, converts Vision's
+  normalized bottom-left bounding boxes to PyMuPDF's top-left point
+  coordinates, and adds redaction annotations exactly like a text match.
+  A page Vision successfully reviewed is never misclassified as
+  "unreadable" even if Tesseract's separate OCR pass fails on it (e.g.
+  cursive handwriting) — `total_text_chars` counts Vision's findings too.
+
+**Known, documented dead end**: `office_converter: msoffice` (AppleScript
+automation of installed Word/Excel/PowerPoint) was attempted and
+live-tested against this Mac's real Word install — every documented
+`save as … file format format PDF` form either errors
+(`active document doesn't understand the "save as" message`) or silently
+writes nothing. Selecting it raises a clear error; LibreOffice is the
+Tier-2 fidelity path instead. See `docs/plans/expansion-plan.md` §3.C.
 
 Runtime is Homebrew Python 3.13; `scripts/run.sh` installs it, rebuilds
 `.venv` on version mismatch, and processes every file in `input/`
-(unsupported types exit 4 into an "Unsupported" summary bucket).
+(unsupported types exit 4 into an "Unsupported" summary bucket; expired/
+missing passwords exit 5 into an "Encrypted" bucket).
 `scripts/test.sh` is the cross-format planted-PII regression gate.
 
 ## Pipeline (src/redact.py)
@@ -102,10 +148,12 @@ open PDF
 └─ scrub document metadata
 └─ save (garbage collect + deflate)
 └─ VERIFY: reopen the OUTPUT file, re-run all patterns over text (re-OCR
-   the scan pages), link URIs, and bookmark titles
+   the scan pages, re-run Vision on pages it touched), link URIs, and
+   bookmark titles
    → report PASS (0 matches) or FAIL
 └─ write report (real runs mask values; dry runs show them in full)
-└─ exit code: 0 ok · 2 unreadable page(s) not redacted · 3 verify failed
+└─ exit code: 0 ok · 2 unreadable page(s) not redacted · 3 verify failed ·
+   4 unsupported format · 5 encrypted, could not open
 ```
 
 ### Detection model
@@ -181,17 +229,27 @@ Idempotent setup then a loop:
 1. Create `.venv` + install requirements if missing.
 2. Install Tesseract via Homebrew if OCR data is absent (non-fatal).
 3. Create `config/redact_config.yaml` from the template if missing.
-4. `mkdir -p input output`; abort helpfully if `input/` has no PDFs.
-5. Empty `output/` (keeps `.gitkeep`).
-6. Run `src/redact.py` per PDF → `output/<name>_redacted.pdf`; classify
-   per-file exit codes (0 ok, 2 unreadable pages, 3 verify failed, else
-   failure).
-7. Print a batch summary; exit non-zero if anything wasn't fully redacted.
+4. `mkdir -p input output`; abort helpfully if `input/` has nothing to do.
+5. If the batch has any `.xls`/`.ppt`/`.odp` (or `office_converter:
+   libreoffice`) and LibreOffice isn't installed: prompt to install via
+   Homebrew (interactive only; non-interactive/declined → those files
+   land in Unsupported this run). The decision is cached in
+   `config/.libreoffice_declined` so the prompt only fires once.
+6. Empty `output/` (keeps `.gitkeep`).
+7. Run `src/redact.py` per file → `output/<name>_redacted.<ext>`;
+   classify per-file exit codes (0 ok, 2 unreadable, 3 verify failed, 4
+   unsupported, 5 encrypted, else failure).
+8. If `--combine` (or the config's `output.combine: true`): run
+   `src/combine_outputs.py` over `output/` to write
+   `combined_redacted.pdf`.
+9. Print a batch summary; exit non-zero if anything wasn't fully redacted.
 
 ## Git hygiene
 
 `.gitignore` blocks all `*.pdf` and `*_report.txt`, `input/*` and
-`output/*` wholesale (except `.gitkeep`), and `config/redact_config.yaml`
-(the personal list of sensitive terms) — neither documents nor the user's
-term list can be committed by accident. Test samples are generated locally
-by `make_sample_pdf.py`, never committed.
+`output/*` wholesale (except `.gitkeep`), `config/redact_config.yaml`
+(the personal list of sensitive terms, and now potentially passwords),
+and `config/.libreoffice_declined` (a local install-prompt marker) —
+neither documents nor the user's term list can be committed by accident.
+Test samples are generated locally by `make_sample_pdf.py`, never
+committed.

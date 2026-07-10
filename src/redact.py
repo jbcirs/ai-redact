@@ -25,6 +25,7 @@ import argparse
 import os
 import re
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -257,6 +258,8 @@ CATEGORY_LABELS = {
     "address": "Addresses",
     "case_number": "Case / docket numbers",
     "custom": "Custom terms (from config)",
+    "face": "Detected faces (Vision)",
+    "handwriting": "Handwriting regions (Vision)",
 }
 
 # ---------------------------------------------------------------------------
@@ -353,6 +356,59 @@ def build_custom_patterns(cfg: dict):
                 print(f"  ! Skipping invalid custom pattern "
                       f"'{item.get('name', item['regex'])}': {e}")
     return patterns
+
+
+def resolve_categories(cfg: dict, preset_arg: str = None, categories_arg: str = None):
+    """Build (preset, categories, exclude, opts) from a loaded config plus
+    the same CLI overrides main() accepts. Shared with combine_outputs.py
+    (docs/plans/expansion-plan.md §3.H) so the combined PDF's re-verify
+    pass uses the exact same detector set as the per-file run it merges."""
+    preset = preset_arg or cfg.get("preset") or "general"
+    if preset not in PRESETS:
+        sys.exit(f"Unknown preset in config: {preset!r} "
+                 f"(choose from: {', '.join(sorted(PRESETS))})")
+
+    forced_on, forced_off = [], []
+    if categories_arg:
+        wanted = {c.strip() for c in categories_arg.split(",") if c.strip()}
+        unknown = [c for c in wanted if c not in CATEGORY_PATTERNS]
+        if unknown:
+            sys.exit(f"Unknown categories: {', '.join(unknown)} "
+                     f"(use --list-categories)")
+    else:
+        wanted = set(PRESETS[preset])
+        switches = cfg.get("categories") or {}
+        unknown = [c for c in switches if c not in CATEGORY_PATTERNS]
+        if unknown:
+            sys.exit(f"Unknown categories in config: {', '.join(unknown)} "
+                     f"(use --list-categories)")
+        forced_on = sorted(c for c, v in switches.items() if v is True)
+        forced_off = sorted(c for c, v in switches.items() if v is False)
+        wanted |= set(forced_on)
+        wanted -= set(forced_off)
+    categories = {c: CATEGORY_PATTERNS[c] for c in CATEGORY_PATTERNS
+                  if c in wanted}
+
+    custom = build_custom_patterns(cfg)
+    if custom:
+        categories["custom"] = custom
+
+    opts = cfg.get("options") or {}
+    exclude = tuple(t.lower() for t in flatten_terms(cfg.get("exclude_terms"))
+                    if len(t) >= 2)
+    return preset, categories, exclude, opts, forced_on, forced_off, custom
+
+
+def resolve_password(input_path: Path, password_arg: str, cfg: dict) -> str:
+    """--password (one-off) beats the config's passwords: filename map
+    (batch runs). Never logged, never echoed (docs/plans/expansion-plan.md
+    §2a.3, §6 grill item 6) — only ever passed to an authenticate() call."""
+    if password_arg:
+        return password_arg
+    passwords = cfg.get("passwords")
+    if isinstance(passwords, dict):
+        return passwords.get(input_path.name)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -459,10 +515,26 @@ def scan_page_images(doc, page):
 # ---------------------------------------------------------------------------
 def process_pdf(input_path: Path, output_path: Path, categories: dict,
                 dry_run: bool, redact_barcodes: bool, exclude=(),
-                use_ocr: bool = True):
-    """Scan (and unless dry_run, redact) the PDF. Returns a results dict."""
+                use_ocr: bool = True, password: str = None,
+                vision_opts: dict = None):
+    """Scan (and unless dry_run, redact) the PDF. Returns a results dict.
+
+    Raises EncryptedFileError if the PDF needs a password and the one
+    given (or none) doesn't open it — never a silent skip (§3.G)."""
     doc = fitz.open(input_path)
+    if doc.needs_pass:
+        if not password or not doc.authenticate(password):
+            doc.close()
+            raise EncryptedFileError(
+                f"{input_path.name} is password-protected and could not "
+                f"be opened ({'wrong password' if password else 'no password given'})."
+                " Use --password, or add it to the config's passwords: map.")
     ocr_enabled = bool(TESSDATA) and use_ocr
+    vision_opts = vision_opts or {}
+    do_faces = bool(vision_opts.get("redact_faces"))
+    do_handwriting = bool(vision_opts.get("redact_handwriting"))
+    do_handwriting_ocr = bool(vision_opts.get("handwriting_ocr"))
+    vision_active = do_faces or do_handwriting or do_handwriting_ocr
 
     results = {
         "counts": {},          # category -> total matches
@@ -477,6 +549,9 @@ def process_pdf(input_path: Path, output_path: Path, categories: dict,
         "total_text_chars": 0,
         "page_count": len(doc),
         "ocr_enabled": ocr_enabled,
+        "faces_redacted": 0,           # count, Vision redact_faces
+        "handwriting_redacted": 0,     # count, Vision redact_handwriting
+        "vision_pages": [],            # pages Vision actually ran on
     }
 
     # File attachments can carry anything; they are invisible on the page,
@@ -507,6 +582,58 @@ def process_pdf(input_path: Path, output_path: Path, categories: dict,
         if has_images:
             results["image_pages"].append(page_no)
 
+        # --- Apple Vision: handwriting/face redaction (opt-in, default
+        # off) — runs on any page with image content, since a signature
+        # or photo can sit on an otherwise normal text page, not just on
+        # scanned pages (expansion-plan.md §3.D). ---
+        vision_ran_this_page = False
+        if vision_active and has_images:
+            from handlers import vision_helper
+            try:
+                png_bytes, img_w, img_h = vision_helper.page_to_png(page)
+                results["vision_pages"].append(page_no)
+                vision_ran_this_page = True
+                if do_faces:
+                    faces = vision_helper.detect_faces(png_bytes)
+                    for nbbox in faces:
+                        rect = vision_helper.map_bbox_to_page_rect(
+                            nbbox, img_w, img_h, page.rect)
+                        results["faces_redacted"] += 1
+                        results["total_text_chars"] += 1  # "readable" signal
+                        if not dry_run:
+                            page.add_redact_annot(rect, fill=(0, 0, 0))
+                if do_handwriting or do_handwriting_ocr:
+                    observations = vision_helper.recognize_text(png_bytes)
+                    for obs_text, nbbox in observations:
+                        results["total_text_chars"] += len(obs_text)
+                        rect = vision_helper.map_bbox_to_page_rect(
+                            nbbox, img_w, img_h, page.rect)
+                        if do_handwriting:
+                            # Blanket: every observation, matched or not —
+                            # the only mechanism that reliably catches a
+                            # signature (§5.1: signature-specific detection
+                            # does not exist as a local capability).
+                            results["handwriting_redacted"] += 1
+                            if not dry_run:
+                                page.add_redact_annot(rect, fill=(0, 0, 0))
+                        else:
+                            hits = find_matches_in_text(
+                                obs_text, categories, exclude)
+                            if hits:
+                                for category, matched in hits:
+                                    results["counts"][category] = (
+                                        results["counts"].get(category, 0) + 1)
+                                    results["matches"].append(
+                                        (page_no, category, matched, True))
+                                if not dry_run:
+                                    page.add_redact_annot(rect, fill=(0, 0, 0))
+            except UnsupportedFormatError as e:
+                # Vision unavailable (e.g. dependency missing) — reported
+                # once via a note, never a silent skip; text/barcode
+                # redaction on this page still proceeds normally.
+                results.setdefault("notes", []).append(str(e))
+                vision_active = False
+
         # Scanned page (image, no text layer): OCR it so we can find WHERE
         # the sensitive text sits inside the image. The redaction boxes then
         # blank out those image regions permanently.
@@ -519,9 +646,15 @@ def process_pdf(input_path: Path, output_path: Path, categories: dict,
             if textpage and text.strip():
                 results["ocr_pages"].append(page_no)
                 results["total_text_chars"] += len(text.strip())
-            else:
+            elif not vision_ran_this_page:
                 results["scanned_pages"].append(page_no)
                 continue  # can't read this page — reported, never faked
+            else:
+                # Tesseract found nothing, but Vision already reviewed this
+                # page above (found matches/faces/handwriting or genuinely
+                # found none) — it's reviewed, not "unreadable"; there's no
+                # text-layer content for the standard match pass below.
+                continue
 
         # --- hyperlinks: a mailto:/tel:/URL target can leak data even after
         # the visible text is gone, so matching links are deleted outright ---
@@ -574,13 +707,15 @@ def process_pdf(input_path: Path, output_path: Path, categories: dict,
 
 
 def verify_output(output_path: Path, categories: dict, ocr_pages=(),
-                  exclude=()) -> dict:
+                  exclude=(), vision_pages=(), vision_opts=None) -> dict:
     """Re-open the redacted PDF and re-run every pattern.
 
     Proves the sensitive text is actually GONE from the file, not hidden.
     Pages that were redacted via OCR are OCR'd AGAIN here, so we verify the
     scanned image itself no longer shows the sensitive text. Link targets
-    and bookmark titles are re-checked too.
+    and bookmark titles are re-checked too. Pages Vision touched are
+    re-scanned with Vision too (faces/handwriting must be gone, not just
+    the plain-text matches — expansion-plan.md §3.D).
     Returns {category: remaining_count}.
     """
     doc = fitz.open(output_path)
@@ -589,6 +724,11 @@ def verify_output(output_path: Path, categories: dict, ocr_pages=(),
     def count(found):
         for category, _ in found:
             remaining[category] = remaining.get(category, 0) + 1
+
+    vision_opts = vision_opts or {}
+    do_faces = bool(vision_opts.get("redact_faces"))
+    do_handwriting = bool(vision_opts.get("redact_handwriting"))
+    do_handwriting_ocr = bool(vision_opts.get("handwriting_ocr"))
 
     for page in doc:
         text = page.get_text("text")
@@ -599,6 +739,26 @@ def verify_output(output_path: Path, categories: dict, ocr_pages=(),
             uri = link.get("uri") or ""
             if uri and find_matches_in_text(uri, categories, exclude):
                 remaining["link"] = remaining.get("link", 0) + 1
+        if (page.number + 1) in vision_pages and (
+            do_faces or do_handwriting or do_handwriting_ocr):
+            from handlers import vision_helper
+            try:
+                png_bytes, _, _ = vision_helper.page_to_png(page)
+                if do_faces:
+                    n_faces = len(vision_helper.detect_faces(png_bytes))
+                    if n_faces:
+                        remaining["face"] = remaining.get("face", 0) + n_faces
+                if do_handwriting or do_handwriting_ocr:
+                    observations = vision_helper.recognize_text(png_bytes)
+                    if do_handwriting and observations:
+                        remaining["handwriting"] = (
+                            remaining.get("handwriting", 0) + len(observations))
+                    elif do_handwriting_ocr:
+                        for obs_text, _ in observations:
+                            count(find_matches_in_text(
+                                obs_text, categories, exclude))
+            except UnsupportedFormatError:
+                pass  # already noted during redaction; don't double-report
     for entry in doc.get_toc(simple=True):
         count(find_matches_in_text(str(entry[1]), categories, exclude))
     doc.close()
@@ -694,6 +854,19 @@ def write_report(report_path: Path, input_path: Path, output_path: Path,
         add("  layer. They were OCR'd to locate sensitive text, and the")
         add("  matching image regions were permanently blanked out.")
         add("  Note: OCR accuracy is not perfect — review these pages.")
+        add("")
+
+    if results.get("vision_pages"):
+        add("-" * 70)
+        add("APPLE VISION (handwriting / faces)")
+        add("-" * 70)
+        add(f"  Pages {results['vision_pages']} were scanned with Apple's "
+            f"on-device Vision")
+        add(f"  framework: {results.get('faces_redacted', 0)} face(s) redacted, "
+            f"{results.get('handwriting_redacted', 0)} handwriting")
+        add("  region(s) redacted (blanket mode).")
+        add("  Note: detection is best-effort, not a guarantee — see README/")
+        add("  docs/CONFIGURATION.md. Always skim these pages before sharing.")
         add("")
 
     warnings = []
@@ -795,13 +968,22 @@ def _wrap(text: str, width: int) -> list:
 # ---------------------------------------------------------------------------
 # Format routing — dispatch non-PDF inputs to src/handlers/* modules
 # ---------------------------------------------------------------------------
-from handlers.common import UnsupportedFormatError  # noqa: E402
+from handlers.common import EncryptedFileError, UnsupportedFormatError  # noqa: E402
 
 TEXT_EXTENSIONS = {".txt", ".md", ".log", ".json", ".yaml", ".yml",
                    ".xml", ".html", ".htm"}
 CSV_EXTENSIONS = {".csv", ".tsv"}
 OFFICE_EXTENSIONS = {".docx", ".pptx"}
 EXCEL_EXTENSIONS = {".xlsx"}
+# Legacy Word family (docs/plans/expansion-plan.md §3.A) — converted via
+# macOS textutil into .docx, then the Tier-1 docx pipeline. NOTE: RTF is
+# plain ASCII text, so it MUST be intercepted here, before the generic
+# _sniffs_as_text() fallback below — otherwise it would be silently
+# misrouted to text_handler, which would read/write raw RTF control codes
+# as if they were plain content and corrupt the file (found during the
+# review pass in docs/plans/expansion-plan.md §2a.1).
+LEGACY_OFFICE_EXTENSIONS = {".doc", ".odt", ".rtf"}
+_OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
 
 def route_input(path: Path):
@@ -813,13 +995,55 @@ def route_input(path: Path):
     ext = path.suffix.lower()
     if head.startswith(b"%PDF"):
         return "pdf", None  # includes PDF-compatible .ai files
+    # RTF and EML are both plain ASCII and would otherwise fall into the
+    # text-sniff fallback; intercept on magic bytes OR extension so a
+    # mislabeled file fails loud via its real handler instead of being
+    # silently treated as plain text.
+    if head.startswith(b"{\\rtf") or ext == ".rtf":
+        from handlers import legacy_office_handler
+        return "legacy_office", legacy_office_handler
+    if ext == ".eml":
+        from handlers import email_handler
+        return "email", email_handler
+    if head.startswith(_OLE2_MAGIC) or ext in (".doc", ".msg"):
+        # OLE2 compound file: legacy .doc, .xls, .ppt, .msg all share this
+        # exact magic — the byte signature alone cannot distinguish them,
+        # so the extension picks the family.
+        if ext == ".doc":
+            from handlers import legacy_office_handler
+            return "legacy_office", legacy_office_handler
+        if ext == ".msg":
+            from handlers import email_handler
+            return "email", email_handler
+        if ext in (".xls", ".ppt"):
+            # No Tier-1 pure-Python reader exists for these binary formats
+            # — LibreOffice (or, if ever restored, MS Office automation)
+            # is the only path. Handler is resolved at dispatch time from
+            # the office_converter config setting, not here.
+            return "office_binary", None
+        if ext in (".docx", ".xlsx", ".pptx"):
+            # Password-protected Office files are OLE2-wrapped (MS-OFFCRYPTO)
+            # even though the unencrypted format is a zip — the byte
+            # signature alone distinguishes "encrypted" from "not", the
+            # extension says which decrypted format to expect afterward.
+            return "encrypted_office", None
+        return "unsupported", None
     if head.startswith(b"PK\x03\x04"):
         if ext in OFFICE_EXTENSIONS:
-            from handlers import office_handler
-            return "office", office_handler
+            # Handler is resolved at dispatch time (office_converter may
+            # request LibreOffice fidelity instead of the Tier-1 default).
+            return "office", None
         if ext in EXCEL_EXTENSIONS:
             from handlers import excel_handler
             return "excel", excel_handler
+        if ext == ".odt" and _is_odf_text(path):
+            from handlers import legacy_office_handler
+            return "legacy_office", legacy_office_handler
+        if ext == ".odp" and _is_odf_presentation(path):
+            return "office_binary", None
+        if ext == ".epub" and _is_epub(path):
+            from handlers import epub_handler
+            return "epub", epub_handler
         return "unsupported", None
     from handlers import image_handler
     if ext in image_handler.SUPPORTED_EXTENSIONS:
@@ -827,10 +1051,36 @@ def route_input(path: Path):
     if ext in CSV_EXTENSIONS:
         from handlers import csv_handler
         return "csv", csv_handler
-    if ext in TEXT_EXTENSIONS or _sniffs_as_text(path):
+    if ext in TEXT_EXTENSIONS or (
+        ext not in LEGACY_OFFICE_EXTENSIONS and _sniffs_as_text(path)
+    ):
         from handlers import text_handler
         return "text", text_handler
     return "unsupported", None
+
+
+def _zip_mimetype(path: Path) -> str:
+    """The zip's uncompressed 'mimetype' entry, or '' if unreadable. Never
+    raises — an unreadable/odd zip just isn't the ODF type being checked."""
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(path) as zf:
+            return zf.read("mimetype").decode("ascii", "replace").strip()
+    except Exception:
+        return ""
+
+
+def _is_odf_text(path: Path) -> bool:
+    return _zip_mimetype(path) == "application/vnd.oasis.opendocument.text"
+
+
+def _is_odf_presentation(path: Path) -> bool:
+    return _zip_mimetype(path) == "application/vnd.oasis.opendocument.presentation"
+
+
+def _is_epub(path: Path) -> bool:
+    return _zip_mimetype(path) == "application/epub+zip"
 
 
 def _sniffs_as_text(path: Path) -> bool:
@@ -840,6 +1090,170 @@ def _sniffs_as_text(path: Path) -> bool:
         return True
     except UnicodeDecodeError:
         return False
+
+
+# ---------------------------------------------------------------------------
+# office_converter resolution — picks the converter for docx/pptx/xls/ppt/odp
+# (docs/plans/expansion-plan.md §3.B). Tier-1 (pure Python, "simple") only
+# exists for .docx/.pptx; .xls/.ppt/.odp have no Tier-1 reader at all.
+# ---------------------------------------------------------------------------
+_TIER1_CAPABLE_EXTENSIONS = {".docx", ".pptx"}
+
+
+def detect_msoffice_app(ext: str) -> bool:
+    """MS Office automation is DESCOPED (expansion-plan.md §3.C) — no
+    working AppleScript PDF export exists on the tested Word build. Always
+    False; kept as a named check so the resolver's shape doesn't need to
+    change if a future Office release restores a verified export path."""
+    return False
+
+
+def resolve_office_handler(ext: str, opts: dict):
+    """Pick the converter module for an office-family file per the config's
+    options.office_converter (auto|simple|msoffice|libreoffice). Raises
+    UnsupportedFormatError with an actionable message rather than ever
+    silently falling back to a different mode than what was explicitly
+    requested."""
+    mode = (opts or {}).get("office_converter") or "auto"
+    tier1_ok = ext in _TIER1_CAPABLE_EXTENSIONS
+
+    def _simple():
+        if not tier1_ok:
+            raise UnsupportedFormatError(
+                f"'{ext}' has no Tier-1 (pure-Python) reader — set "
+                f"office_converter: libreoffice in the config, or export "
+                f"the file as .docx/.pptx.")
+        from handlers import office_handler
+        return office_handler
+
+    def _libreoffice():
+        from handlers import libreoffice_handler
+        if not libreoffice_handler.find_soffice():
+            raise UnsupportedFormatError(
+                "LibreOffice is not installed. Install it with "
+                "'brew install --cask libreoffice' (free, ~700 MB, fully "
+                "offline), or set office_converter accordingly.")
+        return libreoffice_handler
+
+    def _msoffice():
+        if not detect_msoffice_app(ext):
+            raise UnsupportedFormatError(
+                "office_converter: msoffice is not implemented — this "
+                "Word/Excel/PowerPoint build has no working AppleScript "
+                "PDF export (verified by live-testing; see "
+                "docs/plans/expansion-plan.md §3.C). Use "
+                "office_converter: libreoffice or simple instead.")
+        from handlers import msoffice_handler  # pragma: no cover
+        return msoffice_handler
+
+    if mode == "simple":
+        return _simple()
+    if mode == "libreoffice":
+        return _libreoffice()
+    if mode == "msoffice":
+        return _msoffice()
+    if mode != "auto":
+        raise UnsupportedFormatError(
+            f"unknown office_converter setting {mode!r} — choose from: "
+            f"auto, simple, msoffice, libreoffice.")
+    # auto: LibreOffice if installed, else Tier-1 simple for docx/pptx,
+    # else refuse (xls/ppt/odp with no LibreOffice have no fallback).
+    from handlers import libreoffice_handler
+    if libreoffice_handler.find_soffice():
+        return libreoffice_handler
+    if tier1_ok:
+        from handlers import office_handler
+        return office_handler
+    raise UnsupportedFormatError(
+        f"'{ext}' needs LibreOffice to convert (not installed) — install "
+        f"it with 'brew install --cask libreoffice' (free, ~700 MB, fully "
+        f"offline), or export the file as .docx/.pptx/.xlsx and re-run.")
+
+
+def decrypt_office_bytes(input_path: Path, password: str) -> bytes:
+    """Decrypt a password-protected .docx/.xlsx/.pptx to plain OOXML zip
+    bytes via msoffcrypto-tool (docs/plans/expansion-plan.md §3.G, spiked
+    live: encrypt/decrypt/wrong-password round-tripped correctly on this
+    machine). Raises EncryptedFileError — never a silent skip — on a
+    missing/wrong password or any decrypt failure."""
+    import io
+
+    try:
+        import msoffcrypto
+        from msoffcrypto.exceptions import DecryptionError, InvalidKeyError
+    except ImportError as exc:
+        raise EncryptedFileError(
+            "msoffcrypto-tool is not installed — run "
+            "'pip install -r requirements.txt' to open encrypted Office "
+            "files."
+        ) from exc
+
+    if not password:
+        raise EncryptedFileError(
+            f"{input_path.name} is password-protected — use --password, "
+            f"or add it to the config's passwords: map.")
+
+    with open(input_path, "rb") as f:
+        office_file = msoffcrypto.OfficeFile(f)
+        try:
+            office_file.load_key(password=password)
+            out = io.BytesIO()
+            office_file.decrypt(out)
+        except (InvalidKeyError, DecryptionError) as exc:
+            raise EncryptedFileError(
+                f"{input_path.name}: wrong password."
+            ) from exc
+        except Exception as exc:
+            raise EncryptedFileError(
+                f"{input_path.name}: could not decrypt ({exc})."
+            ) from exc
+    return out.getvalue()
+
+
+def run_decrypted_office_flow(input_path, password, args, preset, categories,
+                              exclude, opts, use_ocr, redact_barcodes,
+                              dry_run):
+    """kind == 'encrypted_office': decrypt to a temp file (named exactly
+    like the original so resolve_outputs() derives the same output name
+    it would for an unencrypted file of that name), then dispatch through
+    the normal pipeline. Returns the exit code."""
+    try:
+        decrypted = decrypt_office_bytes(input_path, password)
+    except EncryptedFileError as e:
+        print(f"Encrypted: {e}")
+        return 5
+
+    # Default (-o not given) must land next to the ORIGINAL file, not the
+    # ephemeral temp dir the decrypted copy briefly lives in.
+    dispatch_args = args
+    if not args.output:
+        dispatch_args = argparse.Namespace(**vars(args))
+        dispatch_args.output = str(input_path.parent)
+
+    with tempfile.TemporaryDirectory(prefix="ai-redact-decrypt-") as tmp:
+        tmp_path = Path(tmp) / input_path.name
+        tmp_path.write_bytes(decrypted)
+        kind, handler = route_input(tmp_path)
+        if kind == "unsupported":
+            print(f"Unsupported: decrypted {input_path.name} did not "
+                  f"look like a valid Office file")
+            return 4
+        try:
+            if kind in ("office", "office_binary"):
+                handler = resolve_office_handler(tmp_path.suffix.lower(), opts)
+            if kind in ("image", "office", "office_binary", "legacy_office",
+                       "epub"):
+                return run_convert_flow(handler, kind, dispatch_args, tmp_path,
+                                        preset, categories, exclude, opts,
+                                        use_ocr, redact_barcodes, dry_run)
+            if kind in ("text", "csv", "excel"):
+                return run_native_flow(handler, kind, dispatch_args, tmp_path,
+                                       preset, categories, exclude, opts,
+                                       dry_run)
+        except UnsupportedFormatError as e:
+            print(f"Unsupported: {e}")
+            return 4
+    return 4
 
 
 def resolve_outputs(args, input_path: Path, out_ext: str):
@@ -856,8 +1270,17 @@ def resolve_outputs(args, input_path: Path, out_ext: str):
         output_path = op / name if op.is_dir() else op
     else:
         output_path = input_path.with_name(name)
+    # NOTE: report_path must be derived from output_path.name, not .stem.
+    # .stem only strips the FINAL extension, so foo_redacted.txt and
+    # foo_redacted.yaml (same stem, different native-format extensions —
+    # a completely normal same-directory batch) both collapsed to the
+    # identical "foo_redacted_report.txt", silently overwriting each
+    # other's audit trail. Found while building the combine feature
+    # (docs/plans/expansion-plan.md §3.H), which trusts each file's report
+    # to gate whether it's safe to merge — a collision there would have
+    # let a FAILed file's stale PASS report wave it into a shared PDF.
     report_path = (Path(args.report).expanduser() if args.report
-                   else output_path.with_name(output_path.stem + "_report.txt"))
+                   else output_path.with_name(output_path.name + "_report.txt"))
     return output_path, report_path
 
 
@@ -880,19 +1303,20 @@ def lint_config(cfg: dict) -> list:
     'custom_term:' must never silently reduce redaction."""
     warnings = []
     known = {"preset", "categories", "custom_terms", "exclude_terms",
-             "options", "custom_patterns"}
+             "options", "custom_patterns", "passwords"}
     for k in cfg:
         if k not in known:
             warnings.append(f"unknown setting {k!r} is ignored "
                             f"(known: {', '.join(sorted(known))})")
     opts = cfg.get("options") or {}
-    known_opts = {"ocr", "redact_barcodes", "output", "office_converter"}
+    known_opts = {"ocr", "redact_barcodes", "output", "office_converter",
+                  "handwriting_ocr", "redact_handwriting", "redact_faces"}
     for k in opts if isinstance(opts, dict) else ():
         if k not in known_opts:
             warnings.append(f"unknown option {k!r} is ignored")
     out = opts.get("output") if isinstance(opts, dict) else None
     for k in out if isinstance(out, dict) else ():
-        if k not in {"images", "documents"}:
+        if k not in {"images", "documents", "everything", "combine"}:
             warnings.append(f"unknown output setting {k!r} is ignored")
     return warnings
 
@@ -908,11 +1332,12 @@ def run_convert_flow(handler, kind, args, input_path, preset, categories,
         print(f"Unsupported: {e}")
         return 4
 
-    image_mode = ((opts.get("output") or {}).get("images", "original")
-                  if kind == "image" else None)
+    out_opts = opts.get("output") or {}
+    everything_pdf = out_opts.get("everything") == "pdf"
+    image_mode = out_opts.get("images", "original") if kind == "image" else None
     if kind == "image" and image_mode == "png":
         out_ext = ".png"
-    elif kind == "image" and image_mode != "pdf":
+    elif kind == "image" and image_mode != "pdf" and not everything_pdf:
         out_ext = input_path.suffix.lower()
     else:
         out_ext = ".pdf"
@@ -929,7 +1354,8 @@ def run_convert_flow(handler, kind, args, input_path, preset, categories,
     try:
         results = process_pdf(work_pdf, redacted_pdf, categories,
                               dry_run=dry_run, redact_barcodes=redact_barcodes,
-                              exclude=exclude, use_ocr=use_ocr)
+                              exclude=exclude, use_ocr=use_ocr,
+                              vision_opts=opts)
         if results["total_text_chars"] == 0:
             if kind == "image":
                 # A photo with no readable text is normal — barcodes and
@@ -947,7 +1373,9 @@ def run_convert_flow(handler, kind, args, input_path, preset, categories,
         if not dry_run:
             remaining = verify_output(redacted_pdf, categories,
                                       ocr_pages=set(results["ocr_pages"]),
-                                      exclude=exclude)
+                                      exclude=exclude,
+                                      vision_pages=set(results.get("vision_pages", ())),
+                                      vision_opts=opts)
             if kind == "image" and out_ext != ".pdf":
                 doc = fitz.open(redacted_pdf)
                 output_path = handler.write_back(doc, input_path,
@@ -1001,6 +1429,28 @@ def run_native_flow(handler, kind, args, input_path, preset, categories,
     remaining = None
     if not dry_run:
         remaining = handler.verify_file(output_path, matcher, opts)
+        if remaining == {} and (opts.get("output") or {}).get("everything") == "pdf":
+            from handlers.pdf_render import render_to_pdf_bytes
+            # Same disambiguation as resolve_outputs(): insert the original
+            # extension so a same-stem .pdf input can't collide with this.
+            orig_ext = input_path.suffix.lower().lstrip(".")
+            pdf_path = output_path.with_name(
+                f"{input_path.stem}_{orig_ext}_redacted.pdf")
+            pdf_path.write_bytes(render_to_pdf_bytes(output_path))
+            output_path.unlink()
+            output_path = pdf_path
+            # Report name must track the renamed output (matches
+            # resolve_outputs()'s convention and combine_outputs.py's
+            # lookup — otherwise combine would find no report for this
+            # file and refuse to merge it even though it's clean). The
+            # report itself isn't written until write_native_report()
+            # below, so there's nothing to rename on disk here yet.
+            # An explicit --report path is left exactly as the user gave it.
+            if not args.report:
+                report_path = output_path.with_name(
+                    output_path.name + "_report.txt")
+            results.setdefault("notes", []).append(
+                "output converted to PDF (options.output.everything: pdf)")
     write_native_report(report_path, input_path, output_path, preset,
                         results, remaining, dry_run)
     total = sum(results["counts"].values())
@@ -1080,6 +1530,107 @@ def write_native_report(report_path, input_path, output_path, preset,
     report_path.write_text("\n".join(lines), encoding="utf-8")
 
 
+# Exit-code severity order for aggregating an email + its attachments into
+# one process exit code: verify-FAIL outranks unreadable outranks
+# unsupported outranks success.
+_EXIT_SEVERITY = {0: 0, 4: 1, 2: 2, 3: 3}
+_MAX_EMAIL_DEPTH = 2  # an email attached to an email attached to an email...
+
+
+def run_email_flow(handler, args, input_path, preset, categories, exclude,
+                   opts, use_ocr, redact_barcodes, dry_run, depth=0):
+    """Kind A body conversion (via the normal convert flow) PLUS recursive
+    redaction of attachments, each as its own independently-verified output
+    (docs/plans/expansion-plan.md §3.E). Returns the worst exit code across
+    the body and every attachment."""
+    body_rc = run_convert_flow(handler, "email", args, input_path, preset,
+                               categories, exclude, opts, use_ocr,
+                               redact_barcodes, dry_run)
+    if dry_run:
+        return body_rc  # attachments are not previewed in dry-run mode
+
+    try:
+        attachments = handler.extract_attachments(input_path)
+    except Exception as e:
+        print(f"Note    : attachments not extracted: {e}")
+        return body_rc
+    if not attachments:
+        return body_rc
+
+    out_dir = Path(args.output).expanduser() if args.output else input_path.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = input_path.stem
+    worst_rc = body_rc
+    att_args = argparse.Namespace(output=str(out_dir), report=None)
+
+    with tempfile.TemporaryDirectory(prefix="ai-redact-email-att-") as tmp:
+        tmp_dir = Path(tmp)
+        for i, (name, blob, skip_reason) in enumerate(attachments, 1):
+            print(f"\n--- Attachment {i}/{len(attachments)}: {name} ---")
+            if skip_reason:
+                print(f"Skipped : {skip_reason}")
+                continue
+            if depth >= _MAX_EMAIL_DEPTH:
+                print(f"Skipped : max email-attachment recursion depth "
+                      f"({_MAX_EMAIL_DEPTH}) reached")
+                continue
+            safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", name) or f"attachment{i}"
+            # Naming the temp file AS the desired final stem lets the
+            # existing resolve_outputs()/*_flow machinery produce exactly
+            # "<email-stem>_att{i}_<name>_redacted.<ext>" with no special
+            # casing — it just sees another input file with that name.
+            att_path = tmp_dir / f"{stem}_att{i}_{safe_name}"
+            att_path.write_bytes(blob)
+
+            kind2, handler2 = route_input(att_path)
+            if kind2 == "unsupported":
+                print(f"Unsupported: attachment {name!r} is not a "
+                      f"supported format")
+                worst_rc = max(worst_rc, 4, key=_EXIT_SEVERITY.get)
+                continue
+            try:
+                if kind2 in ("office", "office_binary"):
+                    handler2 = resolve_office_handler(
+                        att_path.suffix.lower(), opts)
+                if kind2 == "email":
+                    rc2 = run_email_flow(handler2, att_args, att_path, preset,
+                                         categories, exclude, opts, use_ocr,
+                                         redact_barcodes, dry_run=False,
+                                         depth=depth + 1)
+                elif kind2 in ("image", "office", "office_binary",
+                              "legacy_office", "epub"):
+                    rc2 = run_convert_flow(handler2, kind2, att_args, att_path,
+                                           preset, categories, exclude, opts,
+                                           use_ocr, redact_barcodes, False)
+                elif kind2 in ("text", "csv", "excel"):
+                    rc2 = run_native_flow(handler2, kind2, att_args, att_path,
+                                          preset, categories, exclude, opts,
+                                          False)
+                elif kind2 == "pdf":
+                    out_path, rep_path = resolve_outputs(att_args, att_path, ".pdf")
+                    results2 = process_pdf(att_path, out_path, categories,
+                                           dry_run=False,
+                                           redact_barcodes=redact_barcodes,
+                                           exclude=exclude, use_ocr=use_ocr,
+                                           vision_opts=opts)
+                    remaining2 = verify_output(
+                        out_path, categories,
+                        ocr_pages=set(results2["ocr_pages"]), exclude=exclude,
+                        vision_pages=set(results2.get("vision_pages", ())),
+                        vision_opts=opts)
+                    write_report(rep_path, att_path, out_path, preset,
+                                results2, remaining2, False)
+                    rc2 = (3 if remaining2 else
+                           2 if results2["scanned_pages"] else 0)
+                else:
+                    rc2 = 4
+            except UnsupportedFormatError as e:
+                print(f"Unsupported: {e}")
+                rc2 = 4
+            worst_rc = max(worst_rc, rc2, key=_EXIT_SEVERITY.get)
+    return worst_rc
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -1095,7 +1646,7 @@ def main():
                "  python3 redact.py doc.pdf -o clean.pdf --config redact_config.yaml\n")
     parser.add_argument("input", nargs="?",
                         help="File to redact: PDF, image (jpg/png/tiff/…), "
-                             "docx, pptx, xlsx, csv/tsv, or text")
+                             "docx, pptx, xlsx, doc/odt/rtf, csv/tsv, or text")
     parser.add_argument("-p", "--preset", choices=sorted(PRESETS),
                         help="Document-type preset (default: the config's "
                              "'preset' setting, else general = all categories)")
@@ -1112,6 +1663,10 @@ def main():
                         help="Comma-separated category list overriding the "
                              "preset (see --list-categories)")
     parser.add_argument("--report", help="Report path (default: <output>_report.txt)")
+    parser.add_argument("--password",
+                        help="Password for an encrypted PDF/docx/xlsx/pptx "
+                             "(one-off; batch runs can instead use the "
+                             "config's passwords: filename map)")
     parser.add_argument("--list-categories", action="store_true",
                         help="List available categories and presets, then exit")
     parser.add_argument("--check-config", action="store_true",
@@ -1146,48 +1701,14 @@ def main():
     for w in lint_config(cfg):
         print(f"  ! Config: {w}")
 
-    # Preset: command line beats the config's 'preset', which beats general.
-    preset = args.preset or cfg.get("preset") or "general"
-    if preset not in PRESETS:
-        sys.exit(f"Unknown preset in config: {preset!r} "
-                 f"(choose from: {', '.join(sorted(PRESETS))})")
-
-    # Assemble enabled categories:
-    #   --categories = exact explicit list (config switches don't apply);
-    #   otherwise preset, adjusted by the config's categories: switches
-    #   (true = always redact, false = never, unset = follow the preset).
-    forced_on, forced_off = [], []
-    if args.categories:
-        wanted = {c.strip() for c in args.categories.split(",") if c.strip()}
-        unknown = [c for c in wanted if c not in CATEGORY_PATTERNS]
-        if unknown:
-            sys.exit(f"Unknown categories: {', '.join(unknown)} "
-                     f"(use --list-categories)")
-    else:
-        wanted = set(PRESETS[preset])
-        switches = cfg.get("categories") or {}
-        unknown = [c for c in switches if c not in CATEGORY_PATTERNS]
-        if unknown:
-            sys.exit(f"Unknown categories in config: {', '.join(unknown)} "
-                     f"(use --list-categories)")
-        forced_on = sorted(c for c, v in switches.items() if v is True)
-        forced_off = sorted(c for c, v in switches.items() if v is False)
-        wanted |= set(forced_on)
-        wanted -= set(forced_off)
-    categories = {c: CATEGORY_PATTERNS[c] for c in CATEGORY_PATTERNS
-                  if c in wanted}
-
-    custom = build_custom_patterns(cfg)
-    if custom:
-        categories["custom"] = custom
+    # Preset/categories/exclude: shared with combine_outputs.py so the
+    # combined PDF's re-verify pass matches the per-file run exactly.
+    preset, categories, exclude, opts, forced_on, forced_off, custom = (
+        resolve_categories(cfg, args.preset, args.categories))
 
     # Behavior toggles from the config's options: section.
-    opts = cfg.get("options") or {}
     use_ocr = bool(opts.get("ocr", True))
     redact_barcodes = bool(opts.get("redact_barcodes", True))
-
-    exclude = tuple(t.lower() for t in flatten_terms(cfg.get("exclude_terms"))
-                    if len(t) >= 2)
 
     if args.check_config:
         print(f"Config    : {config_path}"
@@ -1205,6 +1726,12 @@ def main():
         print(f"Exclude terms ({len(exclude)}):")
         for t in exclude:
             print(f"  - {t}")
+        # Passwords configured: count only — NEVER print the values here.
+        # This is a review-time audit command; leaking secrets into its
+        # output would defeat the point (expansion-plan.md §2a.3).
+        passwords = cfg.get("passwords") or {}
+        print(f"Passwords configured: "
+              f"{len(passwords) if isinstance(passwords, dict) else 0} file(s)")
         print(f"Options   : ocr={use_ocr}, redact_barcodes={redact_barcodes}, "
               f"output.images="
               f"{(opts.get('output') or {}).get('images', 'original')}")
@@ -1216,6 +1743,7 @@ def main():
     input_path = Path(args.input).expanduser()
     if not input_path.exists():
         sys.exit(f"Input file not found: {input_path}")
+    password = resolve_password(input_path, args.password, cfg)
 
     mode = "DRY RUN (preview only)" if args.dry_run else "REDACT"
     print(f"Mode    : {mode}")
@@ -1241,10 +1769,25 @@ def main():
     if kind == "unsupported":
         print(f"Unsupported file type: {input_path.name}\n"
               f"Supported: PDF, images (jpg/png/tiff/heic/…), docx, pptx, "
-              f"xlsx, csv/tsv, and text files.\n"
+              f"xlsx, doc/odt/rtf, eml/msg, epub, csv/tsv, and text files.\n"
+              f"(.xls/.ppt/.odp need LibreOffice — see docs/CONFIGURATION.md.)\n"
               f"Export the document to one of those and re-run.")
         sys.exit(4)
-    if kind in ("image", "office"):
+    if kind in ("office", "office_binary"):
+        try:
+            handler = resolve_office_handler(input_path.suffix.lower(), opts)
+        except UnsupportedFormatError as e:
+            print(f"Unsupported: {e}")
+            sys.exit(4)
+    if kind == "encrypted_office":
+        sys.exit(run_decrypted_office_flow(input_path, password, args, preset,
+                                           categories, exclude, opts, use_ocr,
+                                           redact_barcodes, args.dry_run))
+    if kind == "email":
+        sys.exit(run_email_flow(handler, args, input_path, preset,
+                                categories, exclude, opts, use_ocr,
+                                redact_barcodes, args.dry_run))
+    if kind in ("image", "office", "office_binary", "legacy_office", "epub"):
         sys.exit(run_convert_flow(handler, kind, args, input_path, preset,
                                   categories, exclude, opts, use_ocr,
                                   redact_barcodes, args.dry_run))
@@ -1253,10 +1796,15 @@ def main():
                                  categories, exclude, opts, args.dry_run))
 
     output_path, report_path = resolve_outputs(args, input_path, ".pdf")
-    results = process_pdf(input_path, output_path, categories,
-                          dry_run=args.dry_run,
-                          redact_barcodes=redact_barcodes,
-                          exclude=exclude, use_ocr=use_ocr)
+    try:
+        results = process_pdf(input_path, output_path, categories,
+                              dry_run=args.dry_run,
+                              redact_barcodes=redact_barcodes,
+                              exclude=exclude, use_ocr=use_ocr,
+                              password=password, vision_opts=opts)
+    except EncryptedFileError as e:
+        print(f"Encrypted: {e}")
+        sys.exit(5)
 
     # Hard stop if no page yielded any text (even via OCR): be honest.
     if results["total_text_chars"] == 0:
@@ -1282,7 +1830,9 @@ def main():
     if not args.dry_run:
         remaining = verify_output(output_path, categories,
                                   ocr_pages=set(results["ocr_pages"]),
-                                  exclude=exclude)
+                                  exclude=exclude,
+                                  vision_pages=set(results.get("vision_pages", ())),
+                                  vision_opts=opts)
 
     write_report(report_path, input_path, output_path, preset,
                  results, remaining, args.dry_run)

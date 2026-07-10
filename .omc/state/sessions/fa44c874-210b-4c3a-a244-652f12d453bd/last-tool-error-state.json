@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"rm -rf /tmp/combine_test/out2 && mkdir -p /tmp/combine_test/out2\\nfor f in /tmp/combine_test/in/*; do\\n  .venv/bin/python src/redact.py \\\"$f\\\" --config /tmp/combine_test/cfg.yaml -o /tmp/c...",
+  "error": "Exit code 1\nREFUSING to combine: fixture_docx_redacted.pdf has no PASSing report (fixture_docx_redacted_report.txt). Fix or re-run that file first.\n---\nls: /tmp/combine_test/out2/combined_redacted.pdf: No such file or directory\ncat: /tmp/combine_test/out2/combined_redacted_report.txt: No such file or directory",
+  "timestamp": "2026-07-10T14:29:06.201Z",
+  "retry_count": 2
+}

@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"cd /Users/john.baczkowski/Repos/ai-redact && rm -rf /tmp/office_regress && mkdir -p /tmp/office_regress/out\\n.venv/bin/python tests/make_office_fixtures.py /tmp/office_regress\\nfor f in /t...",
+  "error": "Exit code 1\nwrote /tmp/office_regress/fixture.docx\nwrote /tmp/office_regress/fixture.pptx\nwrote /tmp/office_regress/fixture.xlsx\n=== /tmp/office_regress/fixture.docx ===\nMatches : 4 across 3 categories\nNote    : layout simplified; content-faithful\nNote    : 1 character(s) outside the plain font's repertoire replaced with '?'\nOutput  : /tmp/office_regress/out/fixture_docx_redacted.pdf\nVerify  : PASS — output re-scanned, 0 remaining matches.\nReport  : /tmp/office_regress/out/fixture_docx_redacted_...",
+  "timestamp": "2026-07-10T14:14:47.893Z",
+  "retry_count": 1
+}

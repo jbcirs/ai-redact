@@ -17,5 +17,17 @@ openpyxl>=3.1
 pillow-heif>=0.16      # .heic / .heif
 rawpy>=0.24            # camera RAW decode (.cr2/.cr3/.nef/.arw/.dng) — decode only
 
+# Email attachment support (.msg) — pure Python
+extract-msg>=0.45
+
+# Encrypted .docx/.xlsx/.pptx support — pure Python
+msoffcrypto-tool>=5.4  # encrypt()/decrypt() round-trip spiked on 6.0
+
+# Handwriting OCR + face detection (options: handwriting_ocr /
+# redact_handwriting / redact_faces — all default OFF). Apple's on-device
+# Vision framework; fully local, no network.
+pyobjc-framework-Vision>=10.0
+pyobjc-framework-Quartz>=10.0
+
 # Used only by fixture/sample generators
 qrcode>=7.0
