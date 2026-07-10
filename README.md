@@ -10,12 +10,31 @@ emails, phones, addresses, and your own custom terms truly removed
 Financial numbers you care about — balances, holdings, prices, gains —
 are left untouched.
 
-**Works with:** PDF · Word (.docx) · PowerPoint (.pptx) · Excel (.xlsx) ·
-CSV · text/HTML/JSON · images and scans (JPG, PNG, TIFF, HEIC, WebP, GIF,
-AVIF, and more — including photo metadata like GPS location, which is
-stripped automatically).
-
 Everything runs on your Mac. Nothing is ever uploaded anywhere.
+
+## Supported file types
+
+| Type | Extensions | Comes back as |
+|---|---|---|
+| PDF | `.pdf` | PDF |
+| Word | `.docx` | PDF (Word files can hide tracked changes/comments — PDF avoids leaking them) |
+| PowerPoint | `.pptx` | PDF |
+| Excel | `.xlsx` | Excel (values only — formulas are dropped so a redacted cell can't be reconstructed) |
+| Spreadsheet text | `.csv`, `.tsv` | same format |
+| Text | `.txt`, `.md`, `.log`, `.json`, `.yaml`, `.yml`, `.xml`, `.html`, `.htm` | same format |
+| Photos & images | `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`, `.bmp`, `.tif`, `.tiff`, `.heic`, `.heif`, `.avif`, `.ico` | same format by default (GPS/location and all other hidden metadata always stripped) |
+| Camera RAW & Photoshop | `.cr2`, `.cr3`, `.nef`, `.arw`, `.dng`, `.psd` | JPEG or PNG (these formats can't be written back to their original form) |
+
+Scanned pages and photographed documents are read with on-device OCR
+before redacting.
+
+**Not yet supported:** legacy Office files (`.doc`, `.ppt`, `.xls`,
+`.rtf`, OpenDocument `.odt`/`.odp`), email files (`.eml`, `.msg`), EPUB,
+password-protected files, and Apple/iWork files (`.pages`, `.numbers`,
+`.key` — export them to PDF or Word first). These are planned; see
+[docs/plans/expansion-plan.md](docs/plans/expansion-plan.md). Anything
+else lands in an "Unsupported" bucket in the batch summary rather than
+being guessed at.
 
 ## How to use it
 
