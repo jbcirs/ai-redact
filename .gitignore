@@ -226,3 +226,4 @@ output/*
 !output/.gitkeep
 config/redact_config.yaml
 config/.libreoffice_declined
+.DS_Store

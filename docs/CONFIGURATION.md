@@ -232,7 +232,7 @@ Single file (`./scripts/redact.sh`, same as `src/redact.py`):
 | `-c / --config PATH` | Use another config file for this run. A missing explicit config is a hard error. |
 | `-n / --dry-run` | Preview: write only the report (with full unmasked matches), no output file |
 | `--categories a,b,c` | Exact category list — bypasses both the preset and the config's `categories` switches |
-| `--report PATH` | Report path (default `<output-filename>_report.txt`, e.g. `foo_redacted.pdf_report.txt` — the full output filename, extension included, so two same-stem outputs in different formats never collide) |
+| `--report PATH` | Report path. Default: `logs/<output-filename>_report.txt` in a `logs/` subfolder next to the output (e.g. `output/logs/foo_redacted.pdf_report.txt` — the full output filename, extension included, so two same-stem outputs in different formats never collide). Passing `--report` explicitly overrides this and is used exactly as given, no forced subfolder. |
 | `--password TEXT` | Password for an encrypted PDF/docx/xlsx/pptx (one-off; batch runs can use the config's `passwords:` map instead) |
 | `--list-categories` | Print all categories and presets, then exit |
 | `--check-config` | Print exactly what the config resolves to — every custom term, switch, and option — then exit. Use it to audit that your terms actually loaded. |

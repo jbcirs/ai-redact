@@ -177,6 +177,7 @@ fi
 
 echo "==> Cleaning output/ ..."
 find output -mindepth 1 ! -name '.gitkeep' -delete
+mkdir -p output/logs
 
 # --- process every file -----------------------------------------------------
 echo "==> Redacting ${#FILES[@]} file(s) with preset '$PRESET'"
@@ -251,8 +252,9 @@ if [ ${#FAILED[@]} -gt 0 ]; then
     echo "  FAILED    : ${FAILED[*]}"
 fi
 echo "  Results   : $ROOT/output"
+echo "  Reports   : $ROOT/output/logs"
 echo ""
-echo "Check each *_report.txt for the verification result before sharing."
+echo "Check each report in output/logs for the verification result before sharing."
 
 [ ${#NEEDS_OCR[@]} -eq 0 ] && [ ${#VERIFY_FAILED[@]} -eq 0 ] \
     && [ ${#UNSUPPORTED[@]} -eq 0 ] && [ ${#ENCRYPTED[@]} -eq 0 ] \

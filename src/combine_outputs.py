@@ -34,14 +34,15 @@ from handlers.pdf_render import render_to_pdf_bytes  # noqa: E402
 
 import fitz  # noqa: E402
 
-_SKIP_NAMES = {"combined_redacted.pdf", "combined_redacted_report.txt"}
+_SKIP_NAMES = {"combined_redacted.pdf"}
 
 
 def _report_for(output_path: Path) -> Path:
-    # Must match resolve_outputs() in redact.py: the FULL output filename
+    # Must match redact.default_report_path(): reports live in a logs/
+    # subfolder next to the output, keyed on the FULL output filename
     # (extension included), not .stem — see the collision bug documented
     # there (docs/plans/expansion-plan.md §3.H execution notes).
-    return output_path.with_name(output_path.name + "_report.txt")
+    return redact.default_report_path(output_path)
 
 
 def _report_failed(report_path: Path) -> bool:
@@ -117,7 +118,7 @@ def combine(out_dir: Path, categories: dict, exclude: tuple) -> int:
                 remaining["link"] = remaining.get("link", 0) + 1
 
     combined_path = out_dir / "combined_redacted.pdf"
-    report_path = out_dir / "combined_redacted_report.txt"
+    report_path = redact.default_report_path(combined_path)
     if remaining:
         combined.close()
         _write_report(report_path, outputs, toc_lines, remaining, ok=False)
@@ -161,6 +162,7 @@ def _write_report(report_path, outputs, toc_lines, remaining, ok):
         add("  combined_redacted.pdf was NOT written. Do not share it.")
     add("")
     add(bar)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text("\n".join(lines), encoding="utf-8")
 
 

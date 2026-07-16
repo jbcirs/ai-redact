@@ -23,7 +23,7 @@ Step-by-step operating guide. For how the tool works internally, see
 
 4. Read the **BATCH SUMMARY** at the end. For every file you should see
    `Verify : PASS`.
-5. Open each `output/*_report.txt` and confirm:
+5. Open each report in `output/logs/` and confirm:
    - `POST-REDACTION VERIFICATION` says **PASS**
    - the `WARNINGS` section is empty (or you've manually handled each one)
 6. Skim each `output/*_redacted.pdf` with your own eyes before uploading it
@@ -38,8 +38,9 @@ PyMuPDF/PyYAML, and installs Tesseract OCR via Homebrew if it's missing.
 ./scripts/run.sh financial --dry-run
 ```
 
-Writes only reports to `output/` (no PDFs). Dry-run reports show the FULL
-matched values so you can check accuracy; real-run reports mask them.
+Writes only reports to `output/logs/` (no redacted files). Dry-run
+reports show the FULL matched values so you can check accuracy; real-run
+reports mask them.
 
 ## Single file (without the batch flow)
 
@@ -58,10 +59,11 @@ matched values so you can check accuracy; real-run reports mask them.
 
 Writes `output/combined_redacted.pdf` (all of this run's outputs merged,
 in filename order, with a table of contents) ALONGSIDE the individual
-outputs — never instead of them. Refuses (prints which file, exits
-non-zero) if any individual output didn't pass verification; the
-combined PDF is also independently re-verified as a whole. Same as
-setting `output.combine: true` in the config.
+outputs — never instead of them. Its report lands in `output/logs/`
+like every other report. Refuses (prints which file, exits non-zero) if
+any individual output didn't pass verification; the combined PDF is also
+independently re-verified as a whole. Same as setting
+`output.combine: true` in the config.
 
 ## The config file
 
@@ -153,8 +155,8 @@ aware of what remains:
 - **Context**: whatever you DON'T redact (clinic names, employers, dates,
   unusual holdings) can be combined to narrow down who the document is
   about. Add identifying context to `custom_terms` if that matters to you.
-- **Never upload the `_report.txt`** alongside the PDF — masked values
-  still show first/last characters.
+- **Never upload the report from `output/logs/`** alongside the PDF —
+  masked values still show first/last characters.
 
 ## Rules of thumb
 

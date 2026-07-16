@@ -53,7 +53,7 @@ summary rather than being guessed at.
    ```
 
 3. **Copy your redacted files out of the `output/` folder.**
-   Each one comes with a `_report.txt` — check it says
+   Each one has a matching report in `output/logs/` — check it says
    `POST-REDACTION VERIFICATION: PASS`, then give the file a quick skim.
 
 Text, spreadsheets, CSVs, and images come back in their own format

@@ -56,14 +56,19 @@ wheels for pinned deps), PyMuPDF.
   the legacy Office/email handlers. New magic-byte-ambiguous formats
   (anything ASCII, or sharing OLE2/zip signatures with other formats)
   need the same explicit interception, not the fallback.
-- `resolve_outputs()`'s report path is derived from the output's FULL
-  filename (extension included), never `.stem` — `.stem` strips only the
-  last extension, so two same-stem different-extension outputs (e.g.
-  `foo_redacted.txt` and `foo_redacted.yaml`, an ordinary same-directory
-  batch) would silently collapse to one report, each overwriting the
-  other's audit trail. A real bug found while building
-  `combine_outputs.py`, which trusts each file's report to decide
-  whether it's safe to merge.
+- Reports live in a `logs/` subfolder next to the output file, computed
+  centrally by `default_report_path()` — every write path (`write_report`,
+  `write_native_report`, `combine_outputs.py`) must call it rather than
+  building the path inline, or a new handler will drop its report
+  straight into `output/` and break the convention. The path is derived
+  from the output's FULL filename (extension included), never `.stem` —
+  `.stem` strips only the last extension, so two same-stem
+  different-extension outputs (e.g. `foo_redacted.txt` and
+  `foo_redacted.yaml`, an ordinary same-directory batch) would silently
+  collapse to one report, each overwriting the other's audit trail. A
+  real bug found while building `combine_outputs.py`, which trusts each
+  file's report to decide whether it's safe to merge. An explicit
+  `--report PATH` is honored exactly as given, no forced subfolder.
 - `office_converter: msoffice` (AppleScript automation of installed MS
   Office) is a documented dead end, not an unimplemented feature — live-
   tested against this Mac's real Word install and confirmed broken (no

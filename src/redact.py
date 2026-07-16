@@ -948,6 +948,7 @@ def write_report(report_path: Path, input_path: Path, output_path: Path,
     add("Always skim the output PDF before sharing it.")
     add(bar)
 
+    report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -1256,6 +1257,22 @@ def run_decrypted_office_flow(input_path, password, args, preset, categories,
     return 4
 
 
+def default_report_path(output_path: Path) -> Path:
+    """Reports live in a logs/ subfolder next to the output file, so
+    output/ (or wherever -o points) holds only redacted documents and
+    doesn't get cluttered 1:1 with a .txt per file. Must be derived from
+    output_path.name, not .stem — .stem only strips the FINAL extension,
+    so foo_redacted.txt and foo_redacted.yaml (same stem, different
+    native-format extensions — a completely normal same-directory batch)
+    would otherwise both collapse to the identical
+    "logs/foo_redacted_report.txt", silently overwriting each other's
+    audit trail. Found while building the combine feature
+    (docs/plans/expansion-plan.md §3.H), which trusts each file's report
+    to gate whether it's safe to merge — a collision there would have let
+    a FAILed file's stale PASS report wave it into a shared PDF."""
+    return output_path.parent / "logs" / (output_path.name + "_report.txt")
+
+
 def resolve_outputs(args, input_path: Path, out_ext: str):
     """Name outputs <stem>_redacted.<ext>, inserting the original extension
     when the format changes (foo.docx -> foo_docx_redacted.pdf) so two
@@ -1270,17 +1287,11 @@ def resolve_outputs(args, input_path: Path, out_ext: str):
         output_path = op / name if op.is_dir() else op
     else:
         output_path = input_path.with_name(name)
-    # NOTE: report_path must be derived from output_path.name, not .stem.
-    # .stem only strips the FINAL extension, so foo_redacted.txt and
-    # foo_redacted.yaml (same stem, different native-format extensions —
-    # a completely normal same-directory batch) both collapsed to the
-    # identical "foo_redacted_report.txt", silently overwriting each
-    # other's audit trail. Found while building the combine feature
-    # (docs/plans/expansion-plan.md §3.H), which trusts each file's report
-    # to gate whether it's safe to merge — a collision there would have
-    # let a FAILed file's stale PASS report wave it into a shared PDF.
+    # An explicit --report is honored exactly as given (no forced logs/
+    # subfolder) — the default-location convenience shouldn't override
+    # deliberate user intent.
     report_path = (Path(args.report).expanduser() if args.report
-                   else output_path.with_name(output_path.name + "_report.txt"))
+                   else default_report_path(output_path))
     return output_path, report_path
 
 
@@ -1447,8 +1458,7 @@ def run_native_flow(handler, kind, args, input_path, preset, categories,
             # below, so there's nothing to rename on disk here yet.
             # An explicit --report path is left exactly as the user gave it.
             if not args.report:
-                report_path = output_path.with_name(
-                    output_path.name + "_report.txt")
+                report_path = default_report_path(output_path)
             results.setdefault("notes", []).append(
                 "output converted to PDF (options.output.everything: pdf)")
     write_native_report(report_path, input_path, output_path, preset,
@@ -1527,6 +1537,7 @@ def write_native_report(report_path, input_path, output_path, preset,
     add("")
     add("Reminder: automated redaction is a first pass, not a guarantee.")
     add(bar)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text("\n".join(lines), encoding="utf-8")
 
 
